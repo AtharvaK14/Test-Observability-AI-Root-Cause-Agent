@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "name": "search returns results",
+      "status": "failed",
+      "duration": 12.5,
+      "browser": "firefox",
+      "node": "grid-node-3",
+      "error": {
+        "type": "TimeoutException",
+        "message": "waiting for #results",
+        "stack": "at SearchTest.java:44"
+      },
+      "console": [
+        "Uncaught TypeError: t.map is not a function"
+      ],
+      "screenshot": "https://ci/art/search.png",
+      "metrics": {
+        "cpu_percent": 96.4,
+        "memory_mb": 210
+      }
+    },
+    {
+      "name": "homepage loads",
+      "status": "passed",
+      "duration": 3.1,
+      "browser": "firefox"
+    }
+  ]
+}

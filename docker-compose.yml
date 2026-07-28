@@ -1,0 +1,75 @@
+# Local development stack: PostgreSQL + the API.
+#
+#   cp .env.example .env      # then add your ANTHROPIC_API_KEY
+#   docker compose up --build
+#   open http://localhost:8000/docs
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: tobs-db
+    environment:
+      POSTGRES_USER: tobs
+      POSTGRES_PASSWORD: tobs
+      POSTGRES_DB: test_observability
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Applied on FIRST START ONLY (when the data volume is empty). Editing
+      # the schema later does nothing until you `docker compose down -v` — a
+      # surprise worth stating, because "my column isn't there" otherwise looks
+      # like an application bug.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # `pg_isready` alone returns healthy while the init scripts are still
+      # running, so the API would start against a database with no tables.
+      # Querying an actual table proves the schema landed.
+      test: ["CMD-SHELL", "pg_isready -U tobs -d test_observability && psql -U tobs -d test_observability -c 'SELECT 1 FROM test_runs LIMIT 1' >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: ci/docker/Dockerfile.backend
+    container_name: tobs-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://tobs:tobs@db:5432/test_observability
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-false}
+      # Passed through from your .env rather than baked into the image — a key
+      # in a layer is a key in anything built from that image.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-high}
+      AGENT_ENABLED: ${AGENT_ENABLED:-true}
+      AUTO_ANALYZE_ON_INGEST: ${AUTO_ANALYZE_ON_INGEST:-true}
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:5173"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      # Live reload for development. Remove this (and --reload below) for any
+      # deployment you care about.
+      - ./backend:/app/backend:ro
+    command: >
+      uvicorn backend.main:app
+      --host 0.0.0.0 --port 8000 --reload
+      --reload-dir /app/backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

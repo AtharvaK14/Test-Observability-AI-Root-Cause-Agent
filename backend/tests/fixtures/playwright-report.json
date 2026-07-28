@@ -1,0 +1,116 @@
+{
+  "config": {
+    "version": "1.44.0"
+  },
+  "suites": [
+    {
+      "title": "checkout.spec.ts",
+      "file": "e2e/checkout.spec.ts",
+      "suites": [
+        {
+          "title": "guest checkout",
+          "specs": [
+            {
+              "title": "completes purchase",
+              "ok": false,
+              "tests": [
+                {
+                  "projectName": "chromium",
+                  "timeout": 30000,
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "status": "failed",
+                      "duration": 30012,
+                      "retry": 0,
+                      "startTime": "2026-07-28T10:00:00.000Z",
+                      "error": {
+                        "message": "Timeout 30000ms exceeded.\nwaiting for locator('#place-order')",
+                        "stack": "at e2e/checkout.spec.ts:42:18"
+                      },
+                      "stdout": [
+                        {
+                          "text": "navigating to /cart\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "[error] POST /api/orders 503\n"
+                        }
+                      ],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "/tmp/shot.png"
+                        },
+                        {
+                          "name": "trace",
+                          "contentType": "application/zip",
+                          "path": "/tmp/trace.zip"
+                        }
+                      ]
+                    },
+                    {
+                      "workerIndex": 1,
+                      "status": "passed",
+                      "duration": 4210,
+                      "retry": 1,
+                      "startTime": "2026-07-28T10:01:00.000Z",
+                      "stdout": []
+                    }
+                  ],
+                  "status": "flaky"
+                }
+              ]
+            },
+            {
+              "title": "shows tax",
+              "ok": true,
+              "tests": [
+                {
+                  "projectName": "chromium",
+                  "timeout": 30000,
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "status": "passed",
+                      "duration": 1180,
+                      "retry": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "specs": [
+        {
+          "title": "loads cart page",
+          "ok": false,
+          "tests": [
+            {
+              "projectName": "webkit",
+              "timeout": 30000,
+              "results": [
+                {
+                  "status": "timedOut",
+                  "duration": 30000,
+                  "retry": 0,
+                  "workerIndex": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "message": "Error: global setup failed to seed users",
+      "stack": "at global-setup.ts:11"
+    }
+  ]
+}

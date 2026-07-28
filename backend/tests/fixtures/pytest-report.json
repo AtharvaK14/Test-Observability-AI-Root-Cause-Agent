@@ -1,0 +1,81 @@
+{
+  "created": 1785000000.0,
+  "duration": 9.4,
+  "tests": [
+    {
+      "nodeid": "tests/test_orders.py::TestOrders::test_total[admin]",
+      "outcome": "failed",
+      "setup": {
+        "duration": 0.01,
+        "outcome": "passed"
+      },
+      "call": {
+        "duration": 0.44,
+        "outcome": "failed",
+        "crash": {
+          "path": "tests/test_orders.py",
+          "lineno": 88,
+          "message": "AssertionError: assert 0 == 120"
+        },
+        "longrepr": "def test_total(...):\n>       assert order.total == 120\nE       assert 0 == 120",
+        "stdout": "querying /api/orders\n",
+        "log": [
+          {
+            "levelname": "ERROR",
+            "name": "httpx",
+            "msg": "500 from /api/orders"
+          }
+        ]
+      },
+      "teardown": {
+        "duration": 0.01,
+        "outcome": "passed"
+      },
+      "metadata": {
+        "worker": "gw2"
+      }
+    },
+    {
+      "nodeid": "tests/test_orders.py::test_fixture_dependent",
+      "outcome": "error",
+      "setup": {
+        "duration": 0.02,
+        "outcome": "failed",
+        "crash": {
+          "path": "conftest.py",
+          "lineno": 14,
+          "message": "ConnectionError: cannot reach seed-db:5432"
+        },
+        "longrepr": "conftest.py:14: ConnectionError"
+      },
+      "call": {},
+      "teardown": {
+        "duration": 0.0,
+        "outcome": "passed"
+      }
+    },
+    {
+      "nodeid": "tests/test_orders.py::test_listing",
+      "outcome": "passed",
+      "setup": {
+        "duration": 0.01,
+        "outcome": "passed"
+      },
+      "call": {
+        "duration": 0.21,
+        "outcome": "passed"
+      },
+      "teardown": {
+        "duration": 0.01,
+        "outcome": "passed"
+      }
+    }
+  ],
+  "collectors": [
+    {
+      "nodeid": "tests/test_broken.py",
+      "outcome": "failed",
+      "longrepr": "ImportError: No module named 'missing_helper'"
+    }
+  ]
+}

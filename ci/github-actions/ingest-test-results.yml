@@ -1,0 +1,87 @@
+# Example: send test results to the observability agent after a CI run.
+#
+# Copy into .github/workflows/ in the repository whose tests you want analysed.
+#
+# The important part is not the curl — it is the metadata. A test reporter has
+# no idea what commit it ran against or which pipeline invoked it, and without
+# that the system cannot compute a test's history, bound a suspect commit range,
+# or correlate failures across frameworks. Those fields come from the CI
+# environment and must be attached at upload time.
+
+name: Ingest Test Results
+
+on:
+  workflow_run:
+    workflows: ["Run Tests"]
+    types: [completed]
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    # Runs on failure too — deliberately. A pipeline that only uploads results
+    # when it passes never uploads a single failure, which makes the entire
+    # system pointless.
+    if: always()
+
+    steps:
+      - name: Download test artefacts
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          path: ./results
+          if_no_artifact_found: warn
+
+      - name: Upload to the observability agent
+        env:
+          AGENT_URL: ${{ secrets.OBSERVABILITY_AGENT_URL }}
+          # The commit the TESTS ran against, not the commit that triggered this
+          # workflow. `workflow_run` fires on a separate ref, so
+          # ${{ github.sha }} here would be the wrong SHA — and a wrong SHA
+          # silently breaks the pass→fail commit-range inference, which is one
+          # of the most useful signals the agent gets.
+          GIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          GIT_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          JOB_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -uo pipefail   # not -e: one bad report must not skip the others
+
+          post() {
+            endpoint="$1"; file="$2"
+            [ -f "$file" ] || { echo "skip: $file not found"; return 0; }
+            echo "uploading $file -> $endpoint"
+            curl --fail-with-body --silent --show-error \
+              --max-time 120 --retry 3 --retry-connrefused \
+              -X POST "${AGENT_URL}/ingest/${endpoint}" \
+              -F "file=@${file}" \
+              -F "ci_run_id=${RUN_ID}" \
+              -F "environment=staging" \
+              -F "git_commit=${GIT_SHA}" \
+              -F "git_branch=${GIT_BRANCH}" \
+              -F "ci_provider=github-actions" \
+              -F "ci_job_url=${JOB_URL}" \
+              || echo "::warning::upload failed for ${file}"
+          }
+
+          post playwright ./results/playwright-report/results.json
+          post cypress    ./results/cypress-results/results.json
+          post pytest     ./results/pytest-results/report.json
+
+          # JUnit XML needs an explicit framework: it is a format, not a
+          # framework, and the attribution drives cross-framework correlation.
+          if [ -f ./results/selenium-results/junit.xml ]; then
+            curl --fail-with-body --silent --show-error --max-time 120 --retry 3 \
+              -X POST "${AGENT_URL}/ingest/junit?framework=selenium" \
+              -F "file=@./results/selenium-results/junit.xml" \
+              -F "ci_run_id=${RUN_ID}" \
+              -F "git_commit=${GIT_SHA}" \
+              -F "git_branch=${GIT_BRANCH}" \
+              -F "ci_provider=github-actions" \
+              || echo "::warning::upload failed for junit.xml"
+          fi
+
+      # Ingestion never fails the build. This pipeline is observability, and
+      # observability that can break a deploy gets switched off within a week.
+      - name: Summarise
+        if: always()
+        run: echo "Analysis runs asynchronously — see the dashboard for verdicts."

@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+#
+# Multi-stage: wheels are built in a stage with a compiler, then copied into a
+# slim runtime that has none. Keeps build tooling — and its CVE surface — out
+# of the shipped image.
+
+FROM python:3.12-slim AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copied alone, before the source, so the (slow) dependency layer is cached and
+# only rebuilds when requirements.txt actually changes.
+COPY requirements.txt .
+RUN pip wheel --wheel-dir /wheels -r requirements.txt
+
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# libpq5 is the psycopg runtime library; libpq-dev (headers) stays in the builder.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root. This service accepts file uploads from CI and parses untrusted XML
+# and JSON — exactly the shape of workload where a container escape starts with
+# "and it was running as root".
+RUN useradd --create-home --shell /usr/sbin/nologin appuser
+
+WORKDIR /app
+
+COPY --from=builder /wheels /wheels
+COPY requirements.txt .
+RUN pip install --no-index --find-links=/wheels -r requirements.txt \
+    && rm -rf /wheels
+
+COPY --chown=appuser:appuser backend/ ./backend/
+COPY --chown=appuser:appuser scripts/ ./scripts/
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"
+
+# Single worker by default. Scale with replicas behind a load balancer rather
+# than --workers: analysis runs as an in-process background task, so multiple
+# workers in one container just contend for the same connection pool.
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

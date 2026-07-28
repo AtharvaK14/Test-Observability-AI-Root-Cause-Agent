@@ -1,0 +1,32 @@
+# Runtime dependencies.
+#
+# Lower bounds rather than exact pins: this is a service you are expected to
+# clone and run, and hard pins go stale into an uninstallable set within months.
+# For a reproducible deploy, generate a lock file from this:
+#     pip install pip-tools && pip-compile requirements.txt -o requirements.lock
+#
+# Verified against the versions in the trailing comments on Python 3.11–3.14.
+
+# --- Web ---------------------------------------------------------------------
+fastapi>=0.115                  # verified 0.140.13
+uvicorn[standard]>=0.30         # verified 0.51.0
+python-multipart>=0.0.9         # verified 0.0.32 — required for multipart file upload
+
+# --- Data --------------------------------------------------------------------
+sqlalchemy>=2.0.30              # verified 2.0.51 — 2.x Mapped[] typing is required
+pydantic>=2.7                   # verified 2.13.4
+pydantic-settings>=2.2          # verified 2.14.2
+psycopg[binary]>=3.1            # psycopg 3, not psycopg2: ships wheels for newer
+                                # CPython and is the driver SQLAlchemy 2.x treats
+                                # as current. URL scheme is postgresql+psycopg://
+alembic>=1.13                   # schema migrations (create_all cannot ALTER)
+
+# --- Agent -------------------------------------------------------------------
+anthropic>=0.69                 # verified 0.120.2
+
+# --- Parsing & logging -------------------------------------------------------
+defusedxml>=0.7                 # JUnit XML. NOT stdlib ElementTree: a public
+                                # upload endpoint parsing untrusted XML is an
+                                # XXE / billion-laughs vector, and defusedxml
+                                # is what closes it.
+structlog>=24.1                 # verified 26.1.0

@@ -1,0 +1,16 @@
+# Alembic revisions land here.
+#
+# There is deliberately no initial revision checked in. Generate it against a
+# real PostgreSQL instance:
+#
+#     docker compose up -d db
+#     alembic revision --autogenerate -m "initial schema"
+#     alembic upgrade head
+#
+# Autogenerate reads the DDL dialect from the database it is connected to, so a
+# revision generated against SQLite would emit SQLite types (no JSONB, no
+# TIMESTAMPTZ) and then fail or silently degrade on Postgres. Generating it
+# against the real target is the only way to get it right.
+#
+# For a fresh install you do not need migrations at all — db/schema.sql is
+# applied automatically by docker-compose on first start.

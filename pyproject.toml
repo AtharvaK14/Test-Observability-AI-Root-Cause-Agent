@@ -1,0 +1,101 @@
+[project]
+name = "test-observability-agent"
+version = "0.1.0"
+description = "Ingests multi-framework test results and uses Claude to classify why failures happened."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+# --- pytest ------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "integration: needs a real PostgreSQL instance",
+    "live_api: makes real Anthropic API calls (costs money, needs a key)",
+]
+filterwarnings = [
+    "error::DeprecationWarning:backend.*",
+    # This project's domain nouns are genuinely "test framework", "test status",
+    # "test result" — so importing TestFramework or TestResultDB into a test
+    # module makes pytest try to collect them as test classes and warn. The
+    # names are correct for the domain; renaming them to appease the collector
+    # would be the tail wagging the dog.
+    "ignore::pytest.PytestCollectionWarning",
+]
+
+# --- mypy --------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["backend"]
+strict = true
+plugins = ["pydantic.mypy"]
+# The value of strict mode here is on the parsers: every one of them digs
+# through nested dicts of Any from an external file, and `disallow_any_expr`
+# would be unworkable while `check_untyped_defs` catches the real mistakes.
+warn_unreachable = true
+warn_return_any = true
+disallow_untyped_defs = true
+no_implicit_reexport = false
+
+[[tool.mypy.overrides]]
+# Third-party packages without bundled type information.
+module = ["defusedxml.*", "structlog.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests are held to a lower bar on purpose. They receive pytest fixtures whose
+# types are factory closures, and they deliberately construct partial stubs and
+# malformed payloads — annotating all of that produces noise, not safety, and
+# the strictness that matters is on the code being tested.
+module = ["backend.tests.*"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+warn_return_any = false
+
+[tool.pydantic-mypy]
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --- ruff --------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # import sorting
+    "N",             # naming
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "C4",            # comprehensions
+    "SIM",           # simplify
+    "S",             # bandit (security)
+    "RUF",
+]
+ignore = [
+    "S101",   # assert — used in tests and for type narrowing
+    "B008",   # function call in argument default — the FastAPI Depends() idiom
+    "RUF012", # mutable class attrs need ClassVar — noisy against SQLAlchemy models
+    "RUF001", # "ambiguous" unicode — en dashes in prose ranges ("0.7–0.9") and
+              # em dashes in docstrings are deliberate, not typos
+    "BLE001", # blind except — used deliberately at three worker boundaries where
+              # crashing loses the record of what the worker was doing; each one
+              # logs the exception and writes a FAILED row
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["S", "E501"]
+"backend/analysis/context_retriever.py" = ["S603", "S607"]  # git subprocess, no shell
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]

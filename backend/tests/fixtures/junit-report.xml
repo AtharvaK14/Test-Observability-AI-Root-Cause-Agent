@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="LoginTests" tests="4" failures="1" errors="1" skipped="1" time="12.345"
+             timestamp="2026-07-28T10:00:00">
+    <testcase classname="com.acme.LoginTests" name="testValidLogin" time="1.2"/>
+    <testcase classname="com.acme.LoginTests" name="testInvalidLogin" time="3.4">
+      <failure message="expected banner to be displayed" type="AssertionError">
+org.openqa.selenium.NoSuchElementException: no such element: #error-banner
+	at com.acme.LoginTests.testInvalidLogin(LoginTests.java:57)
+      </failure>
+      <system-err>WARN  session 4f2a lost connection to node grid-3</system-err>
+    </testcase>
+    <testcase classname="com.acme.LoginTests" name="testSsoLogin" time="0.9">
+      <error message="WebDriverException: chrome not reachable" type="WebDriverException">
+	at org.openqa.selenium.remote.RemoteWebDriver.execute(RemoteWebDriver.java:552)
+      </error>
+    </testcase>
+    <testcase classname="com.acme.LoginTests" name="testLegacyLogin" time="0">
+      <skipped message="legacy flow retired"/>
+    </testcase>
+  </testsuite>
+</testsuites>

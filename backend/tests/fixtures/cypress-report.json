@@ -1,0 +1,54 @@
+{
+  "runs": [
+    {
+      "spec": {
+        "relative": "cypress/e2e/login.cy.js"
+      },
+      "video": "cypress/videos/login.cy.js.mp4",
+      "tests": [
+        {
+          "title": [
+            "Login",
+            "rejects a bad password"
+          ],
+          "state": "failed",
+          "attempts": [
+            {
+              "state": "failed",
+              "duration": 4310,
+              "error": {
+                "message": "AssertionError: expected '#err' to be visible",
+                "stack": "at Context.eval (login.cy.js:22:8)"
+              },
+              "screenshots": [
+                {
+                  "path": "cypress/screenshots/login-fail.png"
+                }
+              ]
+            },
+            {
+              "state": "failed",
+              "duration": 4102,
+              "error": {
+                "message": "AssertionError: expected '#err' to be visible"
+              }
+            }
+          ]
+        },
+        {
+          "title": [
+            "Login",
+            "accepts valid credentials"
+          ],
+          "state": "passed",
+          "attempts": [
+            {
+              "state": "passed",
+              "duration": 2210
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "stats": {
+    "tests": 2,
+    "failures": 1
+  },
+  "results": [
+    {
+      "file": "cypress/e2e/cart.cy.js",
+      "suites": [
+        {
+          "title": "Cart",
+          "tests": [
+            {
+              "title": "adds an item",
+              "state": "passed",
+              "duration": 900,
+              "err": {}
+            },
+            {
+              "title": "applies a coupon",
+              "state": "failed",
+              "duration": 5200,
+              "err": {
+                "message": "CypressError: cy.click() failed because element is detached",
+                "estack": "at cart.cy.js:30"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

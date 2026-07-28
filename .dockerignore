@@ -1,0 +1,22 @@
+# Keep secrets and local state out of the build context. A .env copied into a
+# layer is a key baked into every image built from it.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite3
+frontend/node_modules/
+docs/
+README.md
