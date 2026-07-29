@@ -135,6 +135,48 @@ class AgentRunResult:
         return self.classification is not None
 
 
+def apply_run_result(
+    analysis: FailureAnalysisDB, result: AgentRunResult, settings: Settings
+) -> None:
+    """Write an analysis run's outcome onto its pending row.
+
+    Module-level and shared by both analyzers (the Claude agent and the
+    heuristic baseline) so their rows are written *identically*. That is not
+    tidiness — it is what makes the two comparable. If the baseline wrote its
+    confidence or review flag by a different rule, "the agent beats heuristics
+    by X%" would be measuring the persistence code, not the classifiers.
+    """
+    analysis.iterations = result.iterations
+    analysis.input_tokens = result.input_tokens
+    analysis.output_tokens = result.output_tokens
+    analysis.latency_ms = result.latency_ms
+    analysis.model = result.model
+    analysis.updated_at = utcnow()
+
+    if result.classification is None:
+        analysis.status = AnalysisStatus.FAILED
+        analysis.error_message = result.error or "analyzer produced no classification"
+        analysis.requires_human_review = True
+        return
+
+    verdict = result.classification
+    analysis.status = AnalysisStatus.COMPLETED
+    analysis.root_cause = verdict.category
+    analysis.confidence_score = verdict.confidence
+    analysis.reasoning = verdict.reasoning
+    analysis.key_evidence = verdict.key_evidence
+    analysis.suggestions = verdict.suggestions
+
+    # Flag for review on the analyzer's own request OR on low confidence. Both,
+    # because a model can be confidently wrong but rarely claims uncertainty it
+    # does not have — the threshold catches what self-assessment misses.
+    analysis.requires_human_review = (
+        verdict.requires_human_review
+        or verdict.confidence < settings.analysis_confidence_review_threshold
+        or verdict.category == RootCauseCategory.UNKNOWN
+    )
+
+
 class RootCauseAnalysisAgent:
     """Classifies a failed test execution into a root cause with evidence."""
 
@@ -464,35 +506,7 @@ class RootCauseAnalysisAgent:
 
     def _apply_result(self, analysis: FailureAnalysisDB, result: AgentRunResult) -> None:
         """Write the run's outcome onto the pending analysis row."""
-        analysis.iterations = result.iterations
-        analysis.input_tokens = result.input_tokens
-        analysis.output_tokens = result.output_tokens
-        analysis.latency_ms = result.latency_ms
-        analysis.model = result.model
-        analysis.updated_at = utcnow()
-
-        if result.classification is None:
-            analysis.status = AnalysisStatus.FAILED
-            analysis.error_message = result.error or "agent produced no classification"
-            analysis.requires_human_review = True
-            return
-
-        verdict = result.classification
-        analysis.status = AnalysisStatus.COMPLETED
-        analysis.root_cause = verdict.category
-        analysis.confidence_score = verdict.confidence
-        analysis.reasoning = verdict.reasoning
-        analysis.key_evidence = verdict.key_evidence
-        analysis.suggestions = verdict.suggestions
-
-        # Flag for review on the model's own request OR on low confidence. Both,
-        # because a model can be confidently wrong but rarely claims uncertainty
-        # it does not have — the threshold catches what self-assessment misses.
-        analysis.requires_human_review = (
-            verdict.requires_human_review
-            or verdict.confidence < self.settings.analysis_confidence_review_threshold
-            or verdict.category == RootCauseCategory.UNKNOWN
-        )
+        apply_run_result(analysis, result, self.settings)
 
     # ------------------------------------------------------------- prompting
 
@@ -809,15 +823,21 @@ def analyze_test_result(test_result_id: str, settings: Settings | None = None) -
     closed by the time a background task runs — reusing it raises
     ``DetachedInstanceError`` at a confusing distance from the cause.
     """
-    from backend.db.session import session_scope  # local import: avoids a cycle
+    # Local imports: session_scope would be a cycle, and heuristics imports this
+    # module for apply_run_result.
+    from backend.analysis.heuristics import HeuristicAnalyzer
+    from backend.db.session import session_scope
 
     settings = settings or get_settings()
     try:
         with session_scope() as session:
-            agent = RootCauseAnalysisAgent(
-                context_retriever=ContextRetriever(session, settings), settings=settings
+            retriever = ContextRetriever(session, settings)
+            analyzer: RootCauseAnalysisAgent | HeuristicAnalyzer = (
+                HeuristicAnalyzer(retriever, settings)
+                if settings.analysis_mode == "heuristic"
+                else RootCauseAnalysisAgent(retriever, settings)
             )
-            agent.analyze(test_result_id, session)
+            analyzer.analyze(test_result_id, session)
     except AgentUnavailableError as exc:
         logger.info("skipping analysis", extra={"reason": str(exc)})
     except LookupError as exc:

@@ -96,6 +96,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "backend/tests/*" = ["S", "E501"]
 "backend/analysis/context_retriever.py" = ["S603", "S607"]  # git subprocess, no shell
+# S311: `random` is generating demo fixtures, not keys. A seeded Mersenne
+# Twister is exactly right here — reproducibility is the requirement, since
+# a dataset that changes between runs makes "accuracy improved" unfalsifiable.
+"scripts/seed_demo.py" = ["S311"]
+"scripts/score_classifier.py" = ["SLF001"]  # reads agent._run to score without persisting
 
 [tool.ruff.lint.isort]
 known-first-party = ["backend"]

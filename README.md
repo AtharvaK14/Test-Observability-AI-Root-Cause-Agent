@@ -48,41 +48,77 @@ finally submit a schema-validated verdict.
 
 ---
 
-## Quick start
+> **New here?** [docs/SETUP.md](docs/SETUP.md) is a step-by-step walkthrough
+> written for someone who has never run this before — every command, what you
+> should see, and what to do when it goes wrong. The quick start below assumes
+> you're comfortable with a terminal.
+
+## Quick start — no API key, no Docker, no database to install
 
 ```bash
-cp .env.example .env    # add your ANTHROPIC_API_KEY
-docker compose up --build
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt      # Windows
+# .venv/bin/pip install -r requirements-dev.txt        # macOS / Linux
+
+cp .env.example .env      # then set ANALYSIS_MODE=heuristic
+python scripts/seed_demo.py --reset
+python -m uvicorn backend.main:app --reload
 ```
 
 - API + interactive docs: <http://localhost:8000/docs>
 - Health: <http://localhost:8000/health/ready>
 
-Upload a real report:
+That runs the **whole pipeline** — ingest, fingerprint, cluster, classify,
+trends, feedback — on SQLite with a rule-based classifier. Zero cost, zero
+network.
+
+### With Claude
+
+Set `ANTHROPIC_API_KEY` and `ANALYSIS_MODE=claude`. Roughly $0.05 per analysis
+on `claude-sonnet-5`, $0.13 on `claude-opus-5`; `/api/analysis/metrics` reports
+your actual token spend.
+
+### With PostgreSQL
+
+```bash
+docker compose up --build      # provisions Postgres + the API
+```
+
+### Uploading a real report
 
 ```bash
 curl -X POST http://localhost:8000/ingest/playwright \
   -F "file=@playwright-report.json" \
   -F "ci_run_id=local-1" -F "git_commit=$(git rev-parse HEAD)" \
   -F "git_branch=$(git rev-parse --abbrev-ref HEAD)"
+
+curl "http://localhost:8000/api/analysis/failures?hours=24"
 ```
 
-Then read the verdicts:
+## Two classifiers, and why that matters
+
+| | `ANALYSIS_MODE=heuristic` | `ANALYSIS_MODE=claude` |
+|---|---|---|
+| Needs an API key | no | yes |
+| Cost per analysis | £0 | ~$0.05–0.13 |
+| Reads the stack trace | no | yes |
+| Judges whether a locator is brittle | no | yes |
+| Confidence ceiling | 0.80 | unbounded |
+
+The rule-based classifier is not a downgrade — it is the **control group**.
+"The agent classifies 82% correctly" is unfalsifiable on its own; "the agent
+gets 82% where deterministic rules get 54%" is a result. Verdicts from each are
+tagged with distinct `prompt_version` values so their accuracies stay separable.
 
 ```bash
-curl "http://localhost:8000/api/analysis/failures?hours=24" | jq
+python scripts/score_classifier.py                 # rule-based
+python scripts/score_classifier.py --mode claude   # the agent (costs money)
 ```
 
-**Without an API key everything still works** except the classification —
-ingestion, fingerprinting, clustering, history and trends are all
-LLM-independent by design.
-
-### Running locally without Docker
-
-```bash
-python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-DATABASE_URL=sqlite+pysqlite:///./local.db uvicorn backend.main:app --reload
-```
+> ⚠️ The seeded scenarios and the heuristic rules share an author, so the rules
+> match the plants by construction and score near-perfectly. That validates the
+> **pipeline**, not the classifier. A quotable accuracy figure needs real
+> failures adjudicated through the feedback endpoint.
 
 ---
 

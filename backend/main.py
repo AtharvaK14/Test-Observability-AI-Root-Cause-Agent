@@ -47,15 +47,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         extra={
             "version": __version__,
             "environment": settings.environment,
-            "model": settings.anthropic_model,
-            "agent_enabled": settings.agent_enabled and bool(settings.anthropic_api_key),
+            "analysis_mode": settings.analysis_mode if settings.agent_enabled else "off",
+            "model": (
+                settings.anthropic_model if settings.analysis_mode == "claude" else "rules"
+            ),
         },
     )
-    if settings.agent_enabled and not settings.anthropic_api_key:
+    if (
+        settings.agent_enabled
+        and settings.analysis_mode == "claude"
+        and not settings.anthropic_api_key
+    ):
         # Loud, because the failure is otherwise invisible: ingestion keeps
         # working perfectly and no analysis ever appears.
         logger.warning(
-            "ANTHROPIC_API_KEY is not set — ingestion will work but no analysis will run"
+            "ANTHROPIC_API_KEY is not set and ANALYSIS_MODE=claude — ingestion will "
+            "work but no analysis will run. Set ANALYSIS_MODE=heuristic to classify "
+            "with deterministic rules instead."
         )
 
     yield
@@ -147,11 +155,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             healthy = False
 
         if not settings.agent_enabled:
-            checks["agent"] = "disabled"
+            checks["analysis"] = "disabled"
+        elif settings.analysis_mode == "heuristic":
+            checks["analysis"] = "ok (rule-based, no API key required)"
         elif not settings.anthropic_api_key:
-            checks["agent"] = "degraded: ANTHROPIC_API_KEY not set"
+            checks["analysis"] = (
+                "degraded: ANTHROPIC_API_KEY not set — "
+                "set ANALYSIS_MODE=heuristic to classify without one"
+            )
         else:
-            checks["agent"] = f"ok ({settings.anthropic_model})"
+            checks["analysis"] = f"ok ({settings.anthropic_model})"
 
         return JSONResponse(
             status_code=200 if healthy else 503,

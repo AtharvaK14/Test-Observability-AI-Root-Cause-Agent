@@ -40,7 +40,35 @@ class TestHealth:
         not pull the whole instance out of rotation."""
         body = client.get("/health/ready").json()
         assert body["status"] == "ready"
-        assert body["checks"]["agent"] == "disabled"
+        assert body["checks"]["analysis"] == "disabled"
+
+    def test_heuristic_mode_reports_ready_without_a_key(self, settings) -> None:
+        """The offline path must look healthy, not degraded — it is a supported
+        configuration, not a fallback."""
+        from fastapi.testclient import TestClient as Client
+
+        from backend.config import get_settings
+        from backend.db.session import create_all, drop_all, init_engine
+        from backend.main import create_app
+
+        offline = settings.model_copy(
+            update={
+                "agent_enabled": True,
+                "analysis_mode": "heuristic",
+                "anthropic_api_key": None,
+            }
+        )
+        app = create_app(offline)
+        app.dependency_overrides[get_settings] = lambda: offline
+        init_engine(offline, force=True)
+        create_all()
+        try:
+            with Client(app) as offline_client:
+                body = offline_client.get("/health/ready").json()
+            assert body["status"] == "ready"
+            assert "no API key required" in body["checks"]["analysis"]
+        finally:
+            drop_all()
 
 
 class TestIngestEndpoints:

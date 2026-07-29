@@ -88,7 +88,17 @@ class Settings(BaseSettings):
     )
     agent_enabled: bool = Field(
         default=True,
-        description="Kill switch. When false, ingestion still works; no LLM calls are made.",
+        description="Kill switch. When false, ingestion still works; no analysis runs.",
+    )
+    analysis_mode: Literal["claude", "heuristic"] = Field(
+        default="claude",
+        description=(
+            "Which analyzer classifies failures. 'heuristic' uses deterministic "
+            "rules — no API key, no network, no cost — and doubles as the "
+            "baseline the LLM's accuracy is measured against. 'claude' uses the "
+            "agent. Verdicts from both are stored with distinct prompt_version "
+            "values so their accuracies can be computed separately."
+        ),
     )
 
     # --- Analysis behaviour -------------------------------------------------
