@@ -5,8 +5,9 @@ Ingests test results from **Playwright, Cypress, PyTest and Selenium**, then use
 environment, test data, infrastructure, or external dependency — with the
 evidence it used and what to do about it.
 
-> **Status:** backend complete and tested (141 tests, `mypy --strict` clean).
-> Frontend not built yet.
+> **Status:** backend complete — 167 tests, `mypy --strict` clean, verified
+> end-to-end against real Playwright, Cypress and PyTest suites. Frontend not
+> built yet.
 
 ---
 
@@ -57,12 +58,23 @@ finally submit a schema-validated verdict.
 
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install -r requirements-dev.txt      # Windows
-# .venv/bin/pip install -r requirements-dev.txt        # macOS / Linux
+```
 
-cp .env.example .env      # then set ANALYSIS_MODE=heuristic
-python scripts/seed_demo.py --reset
-python -m uvicorn backend.main:app --reload
+Then, using the venv's interpreter directly — no activation needed, and it can't
+silently fall back to system Python (`.venv/bin/python` on macOS/Linux):
+
+```powershell
+.venv/Scripts/python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env                        # defaults need no editing
+.venv/Scripts/python scripts/seed_demo.py --reset  # 3 weeks of history, 10 planted failures
+.venv/Scripts/python -m uvicorn backend.main:app --reload
+```
+
+Then in a **second** terminal — easy to miss, and without it the dashboard has
+data but no verdicts:
+
+```powershell
+.venv/Scripts/python scripts/analyze_pending.py    # classify every failure
 ```
 
 - API + interactive docs: <http://localhost:8000/docs>
@@ -70,7 +82,7 @@ python -m uvicorn backend.main:app --reload
 
 That runs the **whole pipeline** — ingest, fingerprint, cluster, classify,
 trends, feedback — on SQLite with a rule-based classifier. Zero cost, zero
-network.
+network, no API key, no Postgres.
 
 ### With Claude
 
@@ -164,11 +176,13 @@ backend/
   models/      Pydantic schemas + shared enums  (the wire contract)
   db/          SQLAlchemy models, session, repositories  (the storage contract)
   ingest/      Per-framework parsers + the ingestion service
-  analysis/    clustering.py · context_retriever.py · agent.py
+  analysis/    clustering.py · context_retriever.py · agent.py · heuristics.py
   api/         ingest.py (write) · analysis.py (read)
-  tests/       141 tests, SQLite + stubbed client, no network
+  tests/       167 tests, SQLite + stubbed client, no network
+scripts/       seed_demo · analyze_pending · score_classifier · dump_schema
 db/            schema.sql (generated) · migrations/
 ci/            Dockerfile + example GitHub Actions workflow
+docs/          SETUP.md — step-by-step walkthrough
 ```
 
 ---
@@ -297,11 +311,20 @@ switch model. Non-final retry attempts are never analysed.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 141 tests, no network, no key
+pytest                                        # 167 tests, no network, no key
 mypy                                          # strict, clean
 ruff check backend/ scripts/
 python scripts/dump_schema.py > db/schema.sql # after any model change
 ```
+
+Scripts:
+
+| | |
+|---|---|
+| `seed_demo.py --reset` | 3 weeks of labelled history across 4 frameworks |
+| `analyze_pending.py` | Classify every unanalysed failure. Also the restart-recovery path — background tasks die with the process |
+| `score_classifier.py [--mode claude]` | Score a classifier against the seeded ground truth |
+| `dump_schema.py` | Regenerate `db/schema.sql` from the ORM |
 
 The test suite runs entirely on in-memory SQLite with a stubbed Anthropic
 client. That is deliberate: a suite that needs Postgres running and a funded API
@@ -347,13 +370,19 @@ switched off within a week.
 
 - **Frontend.** The API is complete and documented; the React dashboard is next.
 - **Durable job queue.** Analysis runs as a FastAPI background task, which dies
-  with the process. `GET /api/analysis/queue` makes stranded work recoverable,
-  but real volume wants Celery or RQ.
+  with the process. `GET /api/analysis/queue` makes stranded work visible and
+  `scripts/analyze_pending.py` drains it, but real volume wants Celery or RQ.
 - **Auth.** No authentication on any endpoint. Fine behind a VPN, not on the
   open internet.
 - **Vector similarity.** Clustering is exact-hash. Near-miss failures that
   normalise differently stay in separate clusters; embeddings would catch them.
-- **Real accuracy numbers.** The measurement machinery is built and tested, but
-  publishing a number requires adjudicating real failures. `/api/analysis/metrics`
-  reports `feedback_coverage` alongside `accuracy` so a figure over four reviewed
-  analyses is visibly what it is.
+- **Real accuracy numbers.** The measurement machinery is built and tested, and
+  the parsers are verified against real Playwright, Cypress and PyTest output —
+  but publishing an accuracy figure requires adjudicating a meaningful number of
+  real failures, which is in progress. `/api/analysis/metrics` reports
+  `feedback_coverage` alongside `accuracy`, so 100% over two reviewed analyses is
+  visibly what it is rather than a headline.
+- **A live Claude call.** The agent's request shape is built against the current
+  API and verified against a stubbed client across 26 tests (refusals, rate
+  limits, malformed verdicts, loop exhaustion), but the LLM path has not yet been
+  exercised against the real API. The rule-based classifier has.
