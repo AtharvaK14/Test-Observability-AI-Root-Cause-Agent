@@ -1,0 +1,22 @@
+# Non-secret settings shared by the API and the analysis worker.
+#
+# ANALYSIS_MODE=heuristic: rule-based classification — no API key, no network,
+# no cost. Load tests must run in this mode; a load test in claude mode is a
+# load test of someone's Anthropic bill.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+data:
+  # "staging", not "local": schema comes from db/schema.sql via Postgres initdb,
+  # so the app must not also run create_all() on startup.
+  ENVIRONMENT: staging
+  LOG_LEVEL: INFO
+  LOG_JSON: "true"
+  ANALYSIS_MODE: heuristic
+  AGENT_ENABLED: "true"
+  AUTO_ANALYZE_ON_INGEST: "true"
+  # Analyses go to Redis and run in the analysis-worker Deployment. Delete this
+  # line (and redeploy) to fall back to in-process background tasks in the API.
+  REDIS_URL: redis://redis:6379/0

@@ -1,0 +1,15 @@
+# ClusterIP, not LoadBalancer: kind has no cloud load balancer to hand out an
+# address. Reach it from the host with
+#   kubectl port-forward service/root-cause-agent 8000:8000
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: root-cause-agent
+spec:
+  selector:
+    app: root-cause-agent
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

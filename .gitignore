@@ -28,3 +28,13 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Kubernetes / load testing
+# kind writes its kubeconfig to ~/.kube/config, outside the repo; these cover
+# anything exported here by hand, and raw k6 output (the summarised, dated
+# numbers live in docs/load-test-results.md).
+kubeconfig*
+*.kubeconfig
+loadtest/results/
+loadtest/*.json
+!loadtest/*.example.json

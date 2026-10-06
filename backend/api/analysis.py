@@ -22,9 +22,10 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, Query
 from fastapi import status as http_status
+from redis import RedisError
 from sqlalchemy import func, select
 
-from backend.analysis.agent import analyze_test_result
+from backend.analysis import dispatch
 from backend.api.deps import SessionDep, SettingsDep
 from backend.db.models import FailureAnalysisDB, TestResultDB, UserFeedbackDB
 from backend.db.repository import (
@@ -214,13 +215,16 @@ def get_summary(
         ).scalar_one()
     )
 
-    status_counts: dict[AnalysisStatus, int] = dict(
-        session.execute(
+    # A comprehension rather than dict(rows): it type-checks the same on
+    # SQLAlchemy 2.0 and 2.1, whose Row typing differs.
+    status_counts: dict[AnalysisStatus, int] = {
+        status: int(count)
+        for status, count in session.execute(
             select(FailureAnalysisDB.status, func.count(FailureAnalysisDB.id))
             .where(FailureAnalysisDB.created_at >= since)
             .group_by(FailureAnalysisDB.status)
-        ).all()  # type: ignore[arg-type]
-    )
+        )
+    }
     completed = status_counts.get(AnalysisStatus.COMPLETED, 0)
     pending = status_counts.get(AnalysisStatus.PENDING, 0)
 
@@ -497,8 +501,42 @@ def request_analysis(
             "hint": "pass force=true to re-analyse; this appends a new row rather than replacing",
         }
 
-    background.add_task(analyze_test_result, result.id)
-    return {"status": "queued", "test_result_id": result.id}
+    job_ids = dispatch.dispatch_analyses([result.id], background, settings)
+    response: dict[str, Any] = {"status": "queued", "test_result_id": result.id}
+    if job_ids:
+        response["job_id"] = job_ids[0]
+        response["poll"] = f"/api/analysis/jobs/{job_ids[0]}"
+    return response
+
+
+@router.get("/jobs/{job_id}", summary="Status of a queued analysis job")
+def get_analysis_job(
+    settings: SettingsDep,
+    job_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
+) -> dict[str, Any]:
+    """Poll a job from the Redis queue: queued → running → done | failed.
+
+    "done" means the worker finished; the verdict itself is in the failure's
+    analysis, as for any other analysis. Records expire after 24 hours.
+    """
+    if not settings.redis_url:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="job tracking needs the Redis queue (REDIS_URL); analysis runs in-process",
+        )
+    try:
+        job = dispatch.get_job(dispatch.get_redis(settings.redis_url), job_id)
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"queue unavailable: {type(exc).__name__}",
+        ) from exc
+    if job is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=f"job {job_id!r} not found (unknown, or expired after 24h)",
+        )
+    return {"job_id": job_id, **job}
 
 
 @router.get("/queue", summary="Failures awaiting analysis")

@@ -15,9 +15,11 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from redis import RedisError
 from sqlalchemy import text
 
 from backend import __version__
+from backend.analysis import dispatch
 from backend.api import analysis as analysis_routes
 from backend.api import ingest as ingest_routes
 from backend.config import Settings, get_settings
@@ -153,6 +155,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.error("readiness: database unreachable", extra={"error": str(exc)})
             checks["database"] = f"unreachable: {type(exc).__name__}"
             healthy = False
+
+        # Soft, like the agent: with Redis down, ingestion still commits and the
+        # failures stay recoverable via /api/analysis/queue. Pulling every API
+        # replica out of rotation over it would turn a delay into an outage.
+        if settings.redis_url:
+            try:
+                client = dispatch.get_redis(settings.redis_url)
+                checks["queue"] = f"ok (redis, depth {dispatch.queue_depth(client)})"
+            except RedisError as exc:
+                checks["queue"] = f"degraded: redis unreachable ({type(exc).__name__})"
+        else:
+            checks["queue"] = "in-process (REDIS_URL not set)"
 
         if not settings.agent_enabled:
             checks["analysis"] = "disabled"

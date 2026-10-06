@@ -1,0 +1,77 @@
+# PostgreSQL for the local kind cluster.
+#
+# Two API replicas need one shared database — SQLite would give each pod its own
+# file and the replicas would silently disagree. Storage is an emptyDir: the data
+# lives exactly as long as the pod, which is the point of a throwaway local
+# cluster. `kind delete cluster` leaves nothing behind.
+#
+# The schema is applied by the postgres image's initdb hook from the
+# `postgres-schema` ConfigMap (generated from db/schema.sql by k8s/deploy.sh),
+# same as docker-compose. Doing it here rather than via the app's create_all()
+# means two replicas starting at once never race on CREATE TABLE.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: test_observability
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: postgres-credentials, key: username }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: postgres-credentials, key: password }
+          readinessProbe:
+            # pg_isready alone goes green while initdb scripts are still running.
+            # Querying a real table proves the schema landed.
+            exec:
+              command:
+                - sh
+                - -c
+                - psql -U "$POSTGRES_USER" -d test_observability -c 'SELECT 1 FROM test_runs LIMIT 1'
+            periodSeconds: 3
+            failureThreshold: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: schema
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: schema
+          configMap:
+            name: postgres-schema
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP

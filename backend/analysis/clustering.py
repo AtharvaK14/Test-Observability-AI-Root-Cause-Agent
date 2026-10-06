@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TypedDict
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.db.models import FailureClusterDB, TestResultDB
@@ -236,32 +237,29 @@ class ClusterService:
         Called during ingestion, inside the caller's transaction — the cluster
         and the test run must land together or not at all, otherwise a crash
         mid-ingest leaves counts that no longer match the rows behind them.
+
+        The cluster row stays locked until that transaction commits, so callers
+        handling several signatures must call this in a consistent order
+        (IngestionService sorts by signature) or concurrent ingests can deadlock.
         """
         if not result.failure_signature:
             return None
 
-        cluster = self.clusters.get_by_signature(result.failure_signature)
+        cluster = self.clusters.get_by_signature(result.failure_signature, for_update=True)
         now = utcnow()
 
         if cluster is None:
-            cluster = FailureClusterDB(
-                pattern_signature=result.failure_signature,
-                representative_error=(result.error_message or "")[:2000] or None,
-                occurrence_count=1,
-                affected_tests=[result.test_name],
-                affected_frameworks=[result.framework.value],
-                first_seen=result.timestamp or now,
-                last_seen=result.timestamp or now,
-            )
-            self.clusters.add(cluster)
-            logger.info(
-                "new failure cluster created",
-                extra={
-                    "signature": result.failure_signature[:12],
-                    "test_name": result.test_name,
-                },
-            )
-            return cluster
+            created = self._try_create(result, now)
+            if created is not None:
+                return created
+            # Lost the race: a concurrent ingest created this signature's
+            # cluster between our SELECT and INSERT. Its row is committed (the
+            # unique violation is only raised once it is), so count against it.
+            cluster = self.clusters.get_by_signature(result.failure_signature, for_update=True)
+            if cluster is None:  # pragma: no cover — violated, yet absent
+                raise RuntimeError(
+                    f"cluster {result.failure_signature[:12]} conflicted but is not visible"
+                )
 
         cluster.occurrence_count += 1
         cluster.last_seen = max(cluster.last_seen, result.timestamp or now)
@@ -277,6 +275,43 @@ class ClusterService:
                 result.framework.value,
             ]
 
+        return cluster
+
+    def _try_create(self, result: TestResultDB, now: datetime) -> FailureClusterDB | None:
+        """Insert a new cluster, or return None if another transaction beat us to it.
+
+        Check-then-insert races under concurrent ingestion: two CI uploads with
+        the same brand-new failure both see "no cluster" and both INSERT. The
+        loser used to surface as a 500 and lose the whole upload. The SAVEPOINT
+        confines the failed INSERT, so the rest of the ingest transaction — the
+        test rows themselves — survives it.
+        """
+        assert result.failure_signature is not None  # checked by the caller
+        cluster = FailureClusterDB(
+            pattern_signature=result.failure_signature,
+            representative_error=(result.error_message or "")[:2000] or None,
+            occurrence_count=1,
+            affected_tests=[result.test_name],
+            affected_frameworks=[result.framework.value],
+            first_seen=result.timestamp or now,
+            last_seen=result.timestamp or now,
+        )
+        try:
+            with self.clusters.session.begin_nested():
+                self.clusters.add(cluster)
+        except IntegrityError:
+            logger.info(
+                "cluster created concurrently; joining it",
+                extra={"signature": result.failure_signature[:12]},
+            )
+            return None
+        logger.info(
+            "new failure cluster created",
+            extra={
+                "signature": result.failure_signature[:12],
+                "test_name": result.test_name,
+            },
+        )
         return cluster
 
     def apply_analysis_to_cluster(

@@ -306,10 +306,16 @@ class TestAgentLoop:
         """A background worker that raises loses the record of what it was doing."""
         failure = seed_history()
 
-        # A real httpx.Response: anthropic's exception classes read .request off
-        # it during construction, so a bare namespace raises AttributeError and
-        # the test would pass for the wrong reason.
-        import httpx
+        # A real Response: anthropic's exception classes read .request off it
+        # during construction, so a bare namespace raises AttributeError and
+        # the test would pass for the wrong reason. From whichever HTTP library
+        # the installed SDK is built on: httpx before anthropic 1.0, httpx2 after.
+        import importlib
+        import importlib.util
+
+        httpx = importlib.import_module(
+            "httpx2" if importlib.util.find_spec("httpx2") else "httpx"
+        )
 
         rate_limited = anthropic.RateLimitError(
             "slow down",

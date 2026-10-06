@@ -26,7 +26,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 from fastapi import status as http_status
 
-from backend.analysis.agent import analyze_test_result
+from backend.analysis.dispatch import dispatch_analyses
 from backend.api.deps import SessionDep, SettingsDep
 from backend.ingest.base import ParsedReport, ParseError, RunMetadata, parse_report
 from backend.ingest.junit import parse_junit
@@ -113,13 +113,17 @@ def _store(
     """Persist a parsed report and queue analysis for its failures."""
     outcome = IngestionService(session, settings).ingest(report)
 
-    # Queued as background tasks, so the CI step gets its response in
-    # milliseconds instead of waiting on N sequential Claude calls. For real
-    # volume this queue belongs in Celery/RQ — FastAPI background tasks die with
-    # the process, so a restart mid-batch loses the pending analyses. They are
-    # recoverable via get_unanalyzed_failures(), which exists for exactly this.
-    for test_result_id in outcome.analysis_queue:
-        background.add_task(analyze_test_result, test_result_id)
+    # Commit before handing IDs to anything that opens its own connection.
+    # get_db's commit runs in dependency teardown, which FastAPI executes AFTER
+    # background tasks — so without this, analysis looks up rows that are not
+    # yet visible to it and logs "analysis target missing" for every failure.
+    # (In-memory SQLite masks this: StaticPool shares one connection.)
+    session.commit()
+
+    # Redis queue when REDIS_URL is set (durable, consumed by backend.worker),
+    # in-process background tasks otherwise. Either way the CI step gets its
+    # response in milliseconds instead of waiting on N sequential analyses.
+    job_ids = dispatch_analyses(outcome.analysis_queue, background, settings)
 
     if outcome.distinct_problems and outcome.failures:
         logger.info(
@@ -137,6 +141,7 @@ def _store(
         skipped_duplicates=outcome.skipped_duplicates,
         failures_detected=len(outcome.failures),
         analyses_queued=len(outcome.analysis_queue),
+        analysis_job_ids=job_ids,
         errors=outcome.warnings,
         test_result_ids=[row.id for row in outcome.stored],
         ci_run_id=metadata.ci_run_id,

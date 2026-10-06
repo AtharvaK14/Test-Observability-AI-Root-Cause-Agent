@@ -5,7 +5,7 @@ Ingests test results from **Playwright, Cypress, PyTest and Selenium**, then use
 environment, test data, infrastructure, or external dependency — with the
 evidence it used and what to do about it.
 
-> **Status:** backend complete — 167 tests, `mypy --strict` clean, verified
+> **Status:** backend complete — 186 tests, `mypy --strict` clean, verified
 > end-to-end against real Playwright, Cypress and PyTest suites. Frontend not
 > built yet.
 
@@ -96,6 +96,28 @@ your actual token spend.
 docker compose up --build      # provisions Postgres + the API
 ```
 
+### On Kubernetes (local, kind)
+
+The full distributed setup — two API replicas, PostgreSQL, Redis, and a
+separately scaled analysis worker — runs on a local [kind](https://kind.sigs.k8s.io/)
+cluster. No cloud account, no registry: the image is side-loaded into the cluster.
+
+```bash
+kind create cluster --name root-cause-agent
+./k8s/deploy.sh                                   # build, load, apply, wait
+kubectl port-forward service/root-cause-agent 8000:8000
+./loadtest/run-in-cluster.sh                      # k6, in-cluster, from an empty DB
+```
+
+```
+CI ──► Service ──► API ×2 ──commit──► PostgreSQL
+                     │                    ▲
+                     └─ LPUSH ─► Redis ─BLMOVE─► analysis-worker ×N
+```
+
+Measured results, with the exact commands, are in
+[docs/load-test-results.md](docs/load-test-results.md).
+
 ### Uploading a real report
 
 ```bash
@@ -176,12 +198,15 @@ backend/
   models/      Pydantic schemas + shared enums  (the wire contract)
   db/          SQLAlchemy models, session, repositories  (the storage contract)
   ingest/      Per-framework parsers + the ingestion service
-  analysis/    clustering.py · context_retriever.py · agent.py · heuristics.py
+  analysis/    clustering.py · context_retriever.py · agent.py · heuristics.py · dispatch.py
+  worker.py    Redis queue consumer (python -m backend.worker)
   api/         ingest.py (write) · analysis.py (read)
-  tests/       167 tests, SQLite + stubbed client, no network
+  tests/       186 tests, SQLite + stubbed client + fakeredis, no network
 scripts/       seed_demo · analyze_pending · score_classifier · dump_schema
 db/            schema.sql (generated) · migrations/
 ci/            Dockerfile + example GitHub Actions workflow
+k8s/           kind manifests (API, worker, Postgres, Redis) + deploy.sh
+loadtest/      k6 script + in-cluster runner
 docs/          SETUP.md — step-by-step walkthrough
 ```
 
@@ -300,6 +325,7 @@ Everything is in [.env.example](.env.example). The ones that matter:
 | `AUTO_ANALYZE_ON_INGEST` | `true` | Otherwise analyse on demand only |
 | `AGENT_MAX_ITERATIONS` | `4` | Tool-use turns before a verdict is forced |
 | `GIT_REPO_PATH` | unset | Optional checkout for real commit metadata |
+| `REDIS_URL` | unset | Set ⇒ analyses go to a Redis queue consumed by `python -m backend.worker`; unset ⇒ in-process background tasks |
 
 Cost controls, in order of impact: mute known clusters, disable
 `AUTO_ANALYZE_ON_INGEST` and analyse per cluster, lower `ANTHROPIC_EFFORT`, or
@@ -311,7 +337,7 @@ switch model. Non-final retry attempts are never analysed.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 167 tests, no network, no key
+pytest                                        # 186 tests, no network, no key
 mypy                                          # strict, clean
 ruff check backend/ scripts/
 python scripts/dump_schema.py > db/schema.sql # after any model change
@@ -369,9 +395,6 @@ switched off within a week.
 ## Not built yet
 
 - **Frontend.** The API is complete and documented; the React dashboard is next.
-- **Durable job queue.** Analysis runs as a FastAPI background task, which dies
-  with the process. `GET /api/analysis/queue` makes stranded work visible and
-  `scripts/analyze_pending.py` drains it, but real volume wants Celery or RQ.
 - **Auth.** No authentication on any endpoint. Fine behind a VPN, not on the
   open internet.
 - **Vector similarity.** Clustering is exact-hash. Near-miss failures that

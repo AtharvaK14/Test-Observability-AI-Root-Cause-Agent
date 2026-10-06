@@ -203,6 +203,10 @@ class IngestResponse(BaseModel):
     skipped_duplicates: int = 0
     failures_detected: int = 0
     analyses_queued: int = 0
+    analysis_job_ids: list[str] = Field(
+        default_factory=list,
+        description="Pollable at /api/analysis/jobs/{id}. Empty when analysis runs in-process.",
+    )
     errors: list[str] = Field(default_factory=list)
     test_result_ids: list[str] = Field(default_factory=list)
     ci_run_id: str | None = None
