@@ -24,6 +24,10 @@ alembic>=1.13                   # schema migrations (create_all cannot ALTER)
 # --- Agent -------------------------------------------------------------------
 anthropic>=0.69                 # verified 0.120.2
 
+# --- Queue -------------------------------------------------------------------
+redis>=5.0                      # verified 8.1.0 — analysis job queue (optional at
+                                # runtime: only used when REDIS_URL is set)
+
 # --- Parsing & logging -------------------------------------------------------
 defusedxml>=0.7                 # JUnit XML. NOT stdlib ElementTree: a public
                                 # upload endpoint parsing untrusted XML is an

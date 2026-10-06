@@ -1,0 +1,51 @@
+# Analysis worker: consumes the Redis queue the API produces to.
+#
+# Same image as the API, different entry point — the worker is the analysis code
+# the API used to run in-process, now in its own Deployment so it can be scaled,
+# restarted and resourced independently:
+#   kubectl scale deployment/analysis-worker --replicas=3
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analysis-worker
+  labels:
+    tier: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analysis-worker
+  template:
+    metadata:
+      labels:
+        app: analysis-worker
+    spec:
+      # SIGTERM → the worker finishes its current job and exits. Comfortably
+      # above the 5s queue poll; a Claude-mode analysis can take longer, and one
+      # cut off by SIGKILL is requeued by the surviving workers anyway.
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until psql "$PG_URL" -c 'SELECT 1 FROM test_runs LIMIT 1' >/dev/null 2>&1; do echo waiting for postgres; sleep 2; done
+          env:
+            - name: PG_URL
+              valueFrom:
+                secretKeyRef: { name: postgres-credentials, key: libpq-url }
+      containers:
+        - name: worker
+          image: root-cause-agent:local
+          imagePullPolicy: Never
+          command: ["python", "-m", "backend.worker"]
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          resources:
+            requests: { cpu: 250m, memory: 192Mi }
+            limits: { memory: 512Mi }

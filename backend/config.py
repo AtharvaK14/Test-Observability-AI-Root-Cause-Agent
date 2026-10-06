@@ -101,6 +101,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Queue ----------------------------------------------------------------
+    redis_url: str | None = Field(
+        default=None,
+        description=(
+            "When set, analyses are pushed to a Redis queue and run by "
+            "`python -m backend.worker` in a separate process. When unset, they "
+            "run in-process as FastAPI background tasks — no extra "
+            "infrastructure, but they die with the API process."
+        ),
+    )
+
     # --- Analysis behaviour -------------------------------------------------
     auto_analyze_on_ingest: bool = Field(
         default=True,

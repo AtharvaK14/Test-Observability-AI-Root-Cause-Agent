@@ -1,0 +1,54 @@
+# The API. Image is built locally and side-loaded with `kind load docker-image`;
+# it is never pushed anywhere, hence imagePullPolicy: Never.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: root-cause-agent
+  labels:
+    tier: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: root-cause-agent
+  template:
+    metadata:
+      labels:
+        app: root-cause-agent
+    spec:
+      initContainers:
+        # Hold the API until the database answers with its schema in place.
+        # Otherwise the first replica crash-loops through Postgres's init window.
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until psql "$PG_URL" -c 'SELECT 1 FROM test_runs LIMIT 1' >/dev/null 2>&1; do echo waiting for postgres; sleep 2; done
+          env:
+            - name: PG_URL
+              valueFrom:
+                secretKeyRef: { name: postgres-credentials, key: libpq-url }
+      containers:
+        - name: root-cause-agent
+          image: root-cause-agent:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            # Holds DATABASE_URL, plus ANTHROPIC_API_KEY when one is configured.
+            # Created imperatively by k8s/deploy.sh, never committed.
+            - secretRef:
+                name: agent-secrets
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 250m, memory: 192Mi }
+            limits: { memory: 512Mi }

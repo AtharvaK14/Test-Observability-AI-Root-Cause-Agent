@@ -763,10 +763,21 @@ class FailureClusterRepository(BaseRepository[FailureClusterDB]):
 
     model = FailureClusterDB
 
-    def get_by_signature(self, signature: str) -> FailureClusterDB | None:
+    def get_by_signature(
+        self, signature: str, *, for_update: bool = False
+    ) -> FailureClusterDB | None:
+        """Look up a cluster; ``for_update`` row-locks it until commit.
+
+        Lock when about to read-modify-write the counters. Without it, two
+        concurrent ingests both read occurrence_count=N and both write N+1 —
+        under load this lost over half of all increments. SQLite ignores the
+        clause, which is fine: it serialises writers anyway.
+        """
         stmt = select(FailureClusterDB).where(
             FailureClusterDB.pattern_signature == signature
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         return self.session.execute(stmt).scalars().first()
 
     def list_active(

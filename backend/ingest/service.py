@@ -100,16 +100,23 @@ class IngestionService:
         self.test_runs.add_all(fresh)
         outcome.stored = fresh
 
-        signatures: set[str] = set()
-        for row in fresh:
-            if row.status not in _FAILING:
-                continue
-            outcome.failures.append(row)
+        failing = [row for row in fresh if row.status in _FAILING]
+        outcome.failures.extend(failing)
+
+        # Clusters are upserted in signature order, not report order. Each upsert
+        # row-locks its cluster until commit; if two concurrent ingests took
+        # locks in different orders (A then B vs B then A) Postgres would kill
+        # one as a deadlock. One global order makes a cycle impossible.
+        muted: dict[str, bool] = {}
+        for row in sorted(failing, key=lambda r: r.failure_signature or ""):
             cluster = self.clusters.upsert_for_result(row)
+            muted[row.id] = bool(cluster and cluster.is_muted)
+
+        signatures: set[str] = set()
+        for row in failing:
             if row.failure_signature:
                 signatures.add(row.failure_signature)
-
-            if self._should_analyze(row, cluster_is_muted=bool(cluster and cluster.is_muted)):
+            if self._should_analyze(row, cluster_is_muted=muted[row.id]):
                 outcome.analysis_queue.append(row.id)
 
         outcome.distinct_problems = len(signatures)

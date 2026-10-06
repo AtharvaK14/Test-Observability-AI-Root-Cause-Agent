@@ -148,6 +148,69 @@ class TestIngestEndpoints:
         assert response.status_code == 422
 
 
+class TestIngestCommitsBeforeDispatch:
+    """Regression: analysis was dispatched before the ingest transaction committed.
+
+    The request session commits in ``get_db``'s teardown, which FastAPI runs
+    *after* background tasks — so on Postgres the analysis opened a fresh
+    connection, could not see the rows it was asked to analyse, and logged
+    "analysis target missing" for every failure. In-memory SQLite hid it: its
+    StaticPool shares one connection, so uncommitted rows were visible.
+
+    This test uses a file-backed database and checks visibility from a
+    *separate* raw connection, which — like a Postgres worker — sees only
+    committed data.
+    """
+
+    def test_failures_are_committed_when_analysis_is_dispatched(
+        self, settings, tmp_path, monkeypatch, fixture_bytes
+    ) -> None:
+        import sqlite3
+
+        from fastapi.testclient import TestClient as Client
+
+        from backend.config import get_settings
+        from backend.db.session import create_all, drop_all, init_engine
+        from backend.main import create_app
+
+        db_path = tmp_path / "commit-order.db"
+        file_backed = settings.model_copy(
+            update={
+                "database_url": f"sqlite+pysqlite:///{db_path.as_posix()}",
+                "agent_enabled": True,
+                "auto_analyze_on_ingest": True,
+                "analysis_mode": "heuristic",
+            }
+        )
+
+        visible: dict[str, bool] = {}
+
+        def record_visibility(test_result_id: str, *_args, **_kwargs) -> None:
+            with sqlite3.connect(db_path) as other_connection:
+                row = other_connection.execute(
+                    "SELECT 1 FROM test_runs WHERE id = ?", (test_result_id,)
+                ).fetchone()
+            visible[test_result_id] = row is not None
+
+        monkeypatch.setattr("backend.analysis.dispatch.analyze_test_result", record_visibility)
+
+        app = create_app(file_backed)
+        app.dependency_overrides[get_settings] = lambda: file_backed
+        init_engine(file_backed, force=True)
+        create_all()
+        try:
+            with Client(app) as file_client:
+                response = upload(
+                    file_client, "pytest", "report.json", fixture_bytes("pytest-report.json")
+                )
+            assert response.status_code == 200
+            assert response.json()["analyses_queued"] > 0
+            assert visible, "no analysis was dispatched"
+            assert all(visible.values()), f"dispatched before commit: {visible}"
+        finally:
+            drop_all()
+
+
 class TestAnalysisEndpoints:
     @pytest.fixture
     def populated(self, client: TestClient, fixture_bytes) -> TestClient:
