@@ -215,13 +215,16 @@ def get_summary(
         ).scalar_one()
     )
 
-    status_counts: dict[AnalysisStatus, int] = dict(
-        session.execute(
+    # A comprehension rather than dict(rows): it type-checks the same on
+    # SQLAlchemy 2.0 and 2.1, whose Row typing differs.
+    status_counts: dict[AnalysisStatus, int] = {
+        status: int(count)
+        for status, count in session.execute(
             select(FailureAnalysisDB.status, func.count(FailureAnalysisDB.id))
             .where(FailureAnalysisDB.created_at >= since)
             .group_by(FailureAnalysisDB.status)
-        ).all()  # type: ignore[arg-type]
-    )
+        )
+    }
     completed = status_counts.get(AnalysisStatus.COMPLETED, 0)
     pending = status_counts.get(AnalysisStatus.PENDING, 0)
 

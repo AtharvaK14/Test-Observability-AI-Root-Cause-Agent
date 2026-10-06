@@ -727,8 +727,10 @@ class FailureAnalysisRepository(BaseRepository[FailureAnalysisDB]):
         )
         return [
             {
-                "predicted": predicted.value if hasattr(predicted, "value") else predicted,
-                "actual": actual.value if hasattr(actual, "value") else actual,
+                # getattr rather than hasattr-then-.value: SQLAlchemy 2.1 types
+                # these as `RootCauseCategory | None`, which hasattr can't narrow.
+                "predicted": getattr(predicted, "value", predicted),
+                "actual": getattr(actual, "value", actual),
                 "count": int(count),
             }
             for predicted, actual, count in self.session.execute(stmt)
