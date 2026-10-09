@@ -1,0 +1,74 @@
+# Live root-cause eval against the Anthropic API. Costs money.
+#
+# Never runs on its own: manual dispatch only, and it needs the
+# ANTHROPIC_API_KEY repository secret. Dispatching it is the consent to spend,
+# up to the budget you enter. The harness must also match the approval recorded
+# in .claude/hillclimb/root_cause/_state.json (made locally with
+# `run_eval --mode claude --approve-harness`), so a changed harness cannot spend
+# money until someone has reviewed it and committed a new approval.
+#
+# Results and cassettes are uploaded as an artifact. Commit the cassettes to
+# have the regular CI job replay this run offline.
+
+name: Live eval (paid)
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: "Hard spend cap in USD; the run stops submitting cases when reached"
+        required: true
+        default: "1.00"
+      max_cases:
+        description: "Number of cases (0 = all). Start with a 3-case pilot."
+        required: true
+        default: "3"
+      reps:
+        description: "Repetitions per case (3 measures run-to-run consistency)"
+        required: true
+        default: "1"
+      model:
+        description: "Model override (blank = the app's ANTHROPIC_MODEL default)"
+        required: false
+        default: ""
+
+concurrency:
+  group: live-eval
+  cancel-in-progress: false
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          args=(--mode claude --yes --budget-usd "${{ inputs.budget_usd }}"
+                --reps "${{ inputs.reps }}" --workers 4)
+          if [ "${{ inputs.max_cases }}" != "0" ]; then args+=(--max-cases "${{ inputs.max_cases }}"); fi
+          if [ -n "${{ inputs.model }}" ]; then args+=(--model "${{ inputs.model }}"); fi
+          python -m evals.root_cause.run_eval "${args[@]}"
+
+      - name: Upload results and cassettes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-eval-${{ github.run_id }}
+          path: |
+            .claude/hillclimb/root_cause/baseline/
+            evals/root_cause/cassettes/

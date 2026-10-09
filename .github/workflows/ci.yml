@@ -39,7 +39,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check backend/ scripts/
+        run: ruff check backend/ scripts/ evals/
 
       - name: Type-check
         run: mypy
@@ -59,6 +59,16 @@ jobs:
             diff db/schema.sql /tmp/schema.sql || true
             exit 1
           fi
+
+      - name: Root-cause eval, offline (free, no API key)
+        # Oracle and null prove the harness and grader end to end on all cases
+        # (~100% and ~0%); heuristic is the rule baseline the LLM is compared
+        # against; replay re-grades any recorded Claude runs from their
+        # cassettes. --strict fails the step on any harness error.
+        run: |
+          for mode in oracle null heuristic replay; do
+            python -m evals.root_cause.run_eval --mode "$mode" --fresh --strict
+          done
 
       - name: Upload coverage
         if: matrix.python-version == '3.13'

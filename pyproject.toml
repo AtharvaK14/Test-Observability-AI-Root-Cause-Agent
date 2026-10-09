@@ -13,7 +13,7 @@ include = ["backend*"]
 
 # --- pytest ------------------------------------------------------------------
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
+testpaths = ["backend/tests", "evals/root_cause/tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers --strict-config"
 markers = [
@@ -33,7 +33,7 @@ filterwarnings = [
 # --- mypy --------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-files = ["backend"]
+files = ["backend", "evals"]
 strict = true
 plugins = ["pydantic.mypy"]
 # The value of strict mode here is on the parsers: every one of them digs
@@ -54,7 +54,7 @@ ignore_missing_imports = true
 # types are factory closures, and they deliberately construct partial stubs and
 # malformed payloads — annotating all of that produces noise, not safety, and
 # the strictness that matters is on the code being tested.
-module = ["backend.tests.*"]
+module = ["backend.tests.*", "evals.root_cause.tests.*"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false
 disallow_incomplete_defs = false
@@ -95,6 +95,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "backend/tests/*" = ["S", "E501"]
+"evals/root_cause/tests/*" = ["S", "E501", "SLF001"]
+# gh subprocess (fixed argv, no shell) and the agent's prompt builder, which the
+# eval renders so each result row carries the exact text the model was shown.
+"evals/root_cause/extract_github_history.py" = ["S603", "S607"]
+"evals/root_cause/run_eval.py" = ["SLF001"]
 "backend/analysis/context_retriever.py" = ["S603", "S607"]  # git subprocess, no shell
 # S311: `random` is generating demo fixtures, not keys. A seeded Mersenne
 # Twister is exactly right here — reproducibility is the requirement, since
