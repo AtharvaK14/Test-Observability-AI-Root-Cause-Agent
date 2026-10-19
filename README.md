@@ -5,7 +5,7 @@ Ingests test results from **Playwright, Cypress, PyTest and Selenium**, then use
 environment, test data, infrastructure, or external dependency — with the
 evidence it used and what to do about it.
 
-> **Status:** backend complete — 186 tests, `mypy --strict` clean, verified
+> **Status:** backend complete, 217 backend tests plus 24 eval-harness tests, `mypy --strict` clean, verified
 > end-to-end against real Playwright, Cypress and PyTest suites. Frontend not
 > built yet.
 
@@ -141,7 +141,8 @@ curl "http://localhost:8000/api/analysis/failures?hours=24"
 
 The rule-based classifier is not a downgrade — it is the **control group**.
 "The agent classifies 82% correctly" is unfalsifiable on its own; "the agent
-gets 82% where deterministic rules get 54%" is a result. Verdicts from each are
+gets 82% where deterministic rules get 54%" is a result. (Illustrative
+numbers, not measured ones; see the warning below.) Verdicts from each are
 tagged with distinct `prompt_version` values so their accuracies stay separable.
 
 ```bash
@@ -201,7 +202,7 @@ backend/
   analysis/    clustering.py · context_retriever.py · agent.py · heuristics.py · dispatch.py
   worker.py    Redis queue consumer (python -m backend.worker)
   api/         ingest.py (write) · analysis.py (read)
-  tests/       186 tests, SQLite + stubbed client + fakeredis, no network
+  tests/       217 tests, SQLite + stubbed client + fakeredis, no network
 scripts/       seed_demo · analyze_pending · score_classifier · dump_schema
 db/            schema.sql (generated) · migrations/
 ci/            Dockerfile + example GitHub Actions workflow
@@ -337,7 +338,7 @@ switch model. Non-final retry attempts are never analysed.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                        # 186 tests, no network, no key
+pytest                                        # 241 tests (217 backend + 24 eval), no network, no key
 mypy                                          # strict, clean
 ruff check backend/ scripts/
 python scripts/dump_schema.py > db/schema.sql # after any model change
@@ -395,8 +396,9 @@ switched off within a week.
 ## Not built yet
 
 - **Frontend.** The API is complete and documented; the React dashboard is next.
-- **Auth.** No authentication on any endpoint. Fine behind a VPN, not on the
-  open internet.
+- **Per-client auth.** One shared API key (`API_KEY`, sent as `X-API-Key`)
+  guards every ingest and analysis route and is mandatory in staging and prod.
+  There are no per-client keys, scopes, or rotation yet.
 - **Vector similarity.** Clustering is exact-hash. Near-miss failures that
   normalise differently stay in separate clusters; embeddings would catch them.
 - **Real accuracy numbers.** The measurement machinery is built and tested, and

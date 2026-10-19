@@ -8,8 +8,10 @@ values here, ever. Account IDs are written as `ACCOUNT`.
 
 - 2026-10-19, local: baseline on `main` (7dbf0f7) with Python 3.12.10 in a
   fresh venv: `ruff check backend/ scripts/ evals/` clean, `mypy` clean
-  (52 source files, strict), `pytest` 210 passed, `dump_schema.py` matches
-  `db/schema.sql`. The README claimed 186 tests; corrected to 210.
+  (52 source files, strict), `pytest` 210 passed (186 in `backend/tests`, 24 in
+  `evals/root_cause/tests`), `dump_schema.py` matches `db/schema.sql`. The
+  README's "186 tests" was the backend-only count. After Phase A: 241 (217 +
+  24); README updated.
 - 2026-10-19, local: `scripts/score_classifier.py` (heuristic) on
   `seed_demo.py --reset` data: 10/10 correct. The script itself warns this is
   not a quotable figure (rules and seeded scenarios share an author). The
