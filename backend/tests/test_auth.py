@@ -169,3 +169,38 @@ class TestSchemaBootstrap:
     def test_flag_parses_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CREATE_SCHEMA_ON_START", "true")
         assert Settings().create_schema_on_start is True
+
+
+class TestCloudEnvironment:
+    """The exact variables the ECS task is given (deploy/up.sh) must parse."""
+
+    def test_task_environment_loads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name, value in {
+            "ENVIRONMENT": "prod",
+            "LOG_JSON": "true",
+            "ANALYSIS_MODE": "heuristic",
+            "CORS_ORIGINS": "[]",
+            "MAX_INGEST_BYTES": "10485760",
+            "CREATE_SCHEMA_ON_START": "true",
+            "API_KEY": KEY,
+            "DATABASE_URL": "postgresql+psycopg://tobs:pw@db.example:5432/test_observability",
+        }.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+
+        loaded = Settings(_env_file=None)
+        assert loaded.environment == "prod"
+        assert loaded.log_json is True
+        assert loaded.analysis_mode == "heuristic"
+        assert loaded.cors_origins == []
+        assert loaded.max_ingest_bytes == 10 * 1024 * 1024
+        assert loaded.create_schema_on_start is True
+        assert loaded.redis_url is None
+        assert loaded.api_key is not None
+        assert loaded.api_key.get_secret_value() == KEY
+
+    def test_task_without_api_key_fails_to_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ENVIRONMENT", "prod")
+        monkeypatch.delenv("API_KEY", raising=False)
+        with pytest.raises(ValidationError, match="API_KEY must be set"):
+            Settings(_env_file=None)
