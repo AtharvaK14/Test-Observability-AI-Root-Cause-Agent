@@ -1,0 +1,178 @@
+# Build the backend image, deploy it to ECS Express Mode, smoke-test it, and
+# publish a short report to S3.
+#
+# Runs after a green CI on main, or by hand. AWS access is keyless: the job
+# exchanges its GitHub OIDC token for the tobs-github-deploy role, whose trust
+# policy only accepts this repository's main branch (see deploy/up.sh).
+#
+# Repository settings it needs (deploy/README.md):
+#   variables  AWS_ROLE_ARN, AWS_REGION, optional CREATE_SCHEMA_ON_START
+#   secrets    TOBS_API_KEY (same value as SSM /tobs/prod/API_KEY)
+# With AWS_ROLE_ARN unset the job is skipped, so main stays green without AWS.
+#
+# Actions are pinned to full commit SHAs; the comment names the release.
+
+name: Deploy to AWS
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: "Only build and push the image (first-time bootstrap, before the service exists)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.AWS_ROLE_ARN != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      id-token: write   # OIDC token for the AWS role
+      contents: read
+      actions: read     # download CI's coverage artifact for the S3 report
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      # workflow_run executes the default-branch copy of this file, so the
+      # commit to deploy is the one CI tested, not github.sha.
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      SERVICE: tobs-api-v1
+      CLUSTER: tobs
+      ECR_REPO: tobs-api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Resolve names
+        id: names
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          {
+            echo "account=$account"
+            echo "tag=${DEPLOY_SHA::7}"
+            echo "bucket=tobs-reports-$account-$AWS_REGION"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Check whether this commit's image already exists
+        # Tags are immutable, so pushing the same tag twice fails. A rerun for
+        # the same commit reuses the image instead.
+        id: image
+        run: |
+          if aws ecr describe-images --repository-name "$ECR_REPO" \
+               --image-ids "imageTag=${{ steps.names.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.image.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - if: steps.image.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ci/docker/Dockerfile.backend
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.names.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to ECS Express Mode
+        if: ${{ !inputs.build_only }}
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-express-service@7c48a2de16441d528a3c89829831968dc1455010 # v1.2.2
+        with:
+          service-name: ${{ env.SERVICE }}
+          cluster: ${{ env.CLUSTER }}
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.names.outputs.tag }}
+          execution-role-arn: arn:aws:iam::${{ steps.names.outputs.account }}:role/tobs-ecs-execution
+          infrastructure-role-arn: arn:aws:iam::${{ steps.names.outputs.account }}:role/tobs-ecs-infrastructure
+          task-role-arn: arn:aws:iam::${{ steps.names.outputs.account }}:role/tobs-ecs-task
+          container-port: 8000
+          health-check-path: /health
+          cpu: 512
+          memory: 1024
+          min-task-count: 1
+          max-task-count: 1
+          log-group: /tobs/api
+          log-stream-prefix: api
+          environment-variables: >-
+            [{"name":"ENVIRONMENT","value":"prod"},
+             {"name":"LOG_JSON","value":"true"},
+             {"name":"ANALYSIS_MODE","value":"heuristic"},
+             {"name":"CORS_ORIGINS","value":"[]"},
+             {"name":"MAX_INGEST_BYTES","value":"10485760"},
+             {"name":"AUTO_ANALYZE_ON_INGEST","value":"true"},
+             {"name":"CREATE_SCHEMA_ON_START","value":"${{ vars.CREATE_SCHEMA_ON_START || 'false' }}"}]
+          secrets: >-
+            [{"name":"DATABASE_URL","valueFrom":"arn:aws:ssm:${{ vars.AWS_REGION }}:${{ steps.names.outputs.account }}:parameter/tobs/prod/DATABASE_URL"},
+             {"name":"API_KEY","valueFrom":"arn:aws:ssm:${{ vars.AWS_REGION }}:${{ steps.names.outputs.account }}:parameter/tobs/prod/API_KEY"}]
+
+      - name: Smoke test
+        if: ${{ !inputs.build_only }}
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.endpoint }}
+          API_KEY: ${{ secrets.TOBS_API_KEY }}
+          GIT_COMMIT: ${{ env.DEPLOY_SHA }}
+        run: bash deploy/smoke.sh 2>&1 | tee smoke.log
+
+      - name: Download CI coverage
+        if: ${{ !inputs.build_only && github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: coverage
+          path: ci-artifacts
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish report to S3
+        if: ${{ !inputs.build_only }}
+        env:
+          BUCKET: ${{ steps.names.outputs.bucket }}
+          ENDPOINT: ${{ steps.deploy.outputs.endpoint }}
+          TAG: ${{ steps.names.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p report
+          cp smoke.log report/
+          [ -f ci-artifacts/coverage.xml ] && cp ci-artifacts/coverage.xml report/
+          cat > report/summary.md <<EOF
+          # Deploy ${TAG}
+
+          - Commit: ${DEPLOY_SHA}
+          - Image: ${ECR_REPO}:${TAG}
+          - Service: ${SERVICE} (cluster ${CLUSTER})
+          - Smoke test: passed
+          - Workflow run: ${RUN_URL}
+          - Finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          aws s3 cp report/ "s3://${BUCKET}/reports/${DEPLOY_SHA}/" --recursive
+          echo "Report: s3://${BUCKET}/reports/${DEPLOY_SHA}/" >> "$GITHUB_STEP_SUMMARY"
+          echo "Endpoint: ${ENDPOINT}" >> "$GITHUB_STEP_SUMMARY"
