@@ -2,7 +2,7 @@
 
 Run locally:      uvicorn backend.main:app --reload
 Run in Docker:    docker compose up
-API docs:         http://localhost:8000/docs
+API docs:         http://localhost:8000/docs (local and ci only)
 """
 
 from __future__ import annotations
@@ -82,7 +82,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     settings = settings or get_settings()
 
+    # Interactive docs and the schema are a map of every route for anyone who
+    # finds the URL, so a deployed instance does not serve them.
+    docs_enabled = settings.environment in ("local", "ci")
+
     app = FastAPI(
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
         title="Test Observability + AI Root-Cause Agent",
         version=__version__,
         lifespan=lifespan,

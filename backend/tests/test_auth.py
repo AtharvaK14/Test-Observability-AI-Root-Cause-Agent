@@ -126,3 +126,16 @@ class TestStartupGuard:
         configured = Settings(environment="prod", api_key=SecretStr(KEY))
         assert KEY not in repr(configured)
         assert KEY not in str(configured.model_dump())
+
+
+class TestDocs:
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_docs_are_served_locally(self, client: TestClient, path: str) -> None:
+        assert client.get(path).status_code == 200
+
+    @pytest.mark.parametrize("environment", ["staging", "prod"])
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_docs_are_off_when_deployed(self, build_client, environment: str, path: str) -> None:
+        deployed = build_client(environment=environment, api_key=SecretStr(KEY))
+        assert deployed.get(path).status_code == 404
+        assert deployed.get(path, headers={"X-API-Key": KEY}).status_code == 404
