@@ -1,0 +1,11 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-reports-after-7-days",
+      "Status": "Enabled",
+      "Filter": {"Prefix": ""},
+      "Expiration": {"Days": 7},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}
+    }
+  ]
+}

@@ -23,6 +23,31 @@ values here, ever. Account IDs are written as `ACCOUNT`.
   installed. `gh` 2.102.0 is logged in as `AtharvaK14`. Git remote is
   `AtharvaK14/Test-Observability-AI-Root-Cause-Agent` (capitalization as
   GitHub reports it; use exactly this in the OIDC `sub`).
+- 2026-10-19, GitHub API: latest releases and pinned commit SHAs (annotated
+  tags dereferenced): actions/checkout v7.0.1 3d3c42e5; configure-aws-credentials
+  v6.3.0 e1253824; amazon-ecr-login v2.1.7 03f1aad4; setup-buildx-action v4.4.1
+  f87e5991; build-push-action v7.4.0 c3c9e263; amazon-ecs-deploy-express-service
+  v1.2.2 7c48a2de; download-artifact v8.0.2 9000827c. The instructions expected
+  configure-aws-credentials v5 and build-push-action v6; newer majors chosen.
+- 2026-10-19, `aws-actions/amazon-ecs-deploy-express-service` action.yml at
+  v1.2.2 (U9): `environment-variables` and `secrets` are JSON arrays
+  (`[{"name":..,"valueFrom":..}]`); `tags` uses lowercase `key`/`value`;
+  outputs `service-arn` and `endpoint`. Health check default `/ping`, CPU
+  default 256, memory default 512 MiB. README's deploy-role permission list
+  matches section 6.1 exactly.
+- 2026-10-19, AWS docs "Create your first Express Mode service using the AWS
+  CLI": infrastructure role trust principal is `ecs.amazonaws.com` (Sid
+  `AllowAccessInfrastructureForECSExpressServices`); describe and monitor take
+  `--service-arn`; URL format `https://<service>.ecs.<region>.on.aws/`; a task
+  definition supplied instead must name its container `Main`; IAM roles may
+  need about a minute to propagate before the first create.
+- 2026-10-19, same page vs action/CLI reference: CONFLICT on CPU/memory units.
+  Tutorial shows `--cpu 2 --memory 4` (vCPU/GB), the action documents CPU units
+  and MiB (256..16384 / 512..122880). Scripts use 512/1024; VERIFY with
+  `aws ecs create-express-gateway-service help` before the first create.
+- 2026-10-19, local: `shellcheck` 0.11.0 (via pip `shellcheck-py`) clean on
+  deploy/*.sh; `actionlint` clean on all workflows; `down.sh` dry run against
+  a stubbed `aws` lists the expected deletes and refuses a mismatched account.
 
 ## Deviations from AWS_DEPLOY_INSTRUCTIONS.md
 
@@ -30,6 +55,18 @@ values here, ever. Account IDs are written as `ACCOUNT`.
   build-and-push via `workflow_dispatch`) unless Docker Desktop is installed.
   The local container check in section 4 is replaced by the CI `docker` job,
   which already builds the image and imports the app.
+
+- Extra SSM parameter `/tobs/prod/DB_PASSWORD` (SecureString, free tier).
+  `up.sh` stores the generated master password there before
+  `create-db-instance`, so a crash between creating the DB and writing
+  `DATABASE_URL` (the DB takes 10+ minutes) cannot lose it. Same prefix and
+  protection as the listed secrets; deleted by `down.sh`.
+- `DATABASE_URL` carries `?sslmode=require` from the start (U3 still to be
+  checked against `rds.force_ssl`; require works either way).
+- `deploy-aws.yml` is skipped while the `AWS_ROLE_ARN` variable is unset, so
+  merging it before AWS exists does not turn `main` red.
+- `.gitattributes` forces LF for `*.sh` (this checkout uses core.autocrlf, and
+  CRLF breaks bash).
 
 ## Decisions and tradeoffs
 
