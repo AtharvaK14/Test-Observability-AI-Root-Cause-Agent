@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -149,6 +149,15 @@ class Settings(BaseSettings):
 
     # --- API ----------------------------------------------------------------
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Shared key every ingest and analysis request must send in the "
+            "X-API-Key header. Optional in local and ci; required in staging "
+            "and prod, where startup fails without it rather than serving an "
+            "open API."
+        ),
+    )
 
     @field_validator("database_url")
     @classmethod
@@ -162,6 +171,20 @@ class Settings(BaseSettings):
         if value.startswith("postgres://"):
             return value.replace("postgres://", "postgresql+psycopg://", 1)
         return value
+
+    @model_validator(mode="after")
+    def _require_api_key_when_deployed(self) -> Settings:
+        """Fail closed at startup: a deployed service never runs without a key.
+
+        Checked here rather than at first request so a misconfigured task dies
+        during the deploy, where the rollout catches it, instead of serving an
+        unauthenticated API until someone notices.
+        """
+        if self.environment in ("staging", "prod") and (
+            self.api_key is None or not self.api_key.get_secret_value()
+        ):
+            raise ValueError("API_KEY must be set when ENVIRONMENT is staging or prod")
+        return self
 
     @property
     def is_sqlite(self) -> bool:

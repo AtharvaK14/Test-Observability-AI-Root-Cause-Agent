@@ -22,6 +22,7 @@ from backend import __version__
 from backend.analysis import dispatch
 from backend.api import analysis as analysis_routes
 from backend.api import ingest as ingest_routes
+from backend.api.deps import ApiKeyDep
 from backend.config import Settings, get_settings
 from backend.db.session import create_all, get_engine, init_engine
 from backend.logging_config import configure_logging
@@ -101,8 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(ingest_routes.router)
-    app.include_router(analysis_routes.router)
+    # Health probes stay open: the load balancer and the deploy smoke test call
+    # them without credentials, and neither returns data worth protecting.
+    app.include_router(ingest_routes.router, dependencies=[ApiKeyDep])
+    app.include_router(analysis_routes.router, dependencies=[ApiKeyDep])
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
