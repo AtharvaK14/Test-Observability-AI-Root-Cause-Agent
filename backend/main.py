@@ -30,6 +30,21 @@ from backend.logging_config import configure_logging
 logger = logging.getLogger(__name__)
 
 
+def schema_bootstrap_reason(settings: Settings) -> str | None:
+    """Why startup should run ``create_all()``, or None if it should not.
+
+    Convenient locally, wrong in production: create_all cannot ALTER an
+    existing table, so a schema change appears to succeed and then fails at
+    runtime with an undefined-column error. Production goes through
+    db/schema.sql or Alembic, except for the explicit first-deploy opt-in.
+    """
+    if settings.environment in ("local", "ci"):
+        return "development mode"
+    if settings.create_schema_on_start:
+        return "CREATE_SCHEMA_ON_START"
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start-up and shut-down."""
@@ -37,13 +52,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings)
     init_engine(settings)
 
-    if settings.environment in ("local", "ci"):
-        # Convenient locally, wrong in production: create_all cannot ALTER an
-        # existing table, so a schema change appears to succeed and then fails
-        # at runtime with an undefined-column error. Production goes through
-        # db/schema.sql or Alembic.
+    reason = schema_bootstrap_reason(settings)
+    if reason is not None:
         create_all()
-        logger.info("created tables via create_all (development mode)")
+        logger.info("created missing tables via create_all", extra={"reason": reason})
+    else:
+        logger.info("skipped create_all; schema is managed outside the app")
 
     logger.info(
         "service started",

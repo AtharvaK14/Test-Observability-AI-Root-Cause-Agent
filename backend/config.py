@@ -49,6 +49,15 @@ class Settings(BaseSettings):
         ),
     )
     db_echo: bool = False
+    create_schema_on_start: bool = Field(
+        default=False,
+        description=(
+            "Run create_all() at startup outside local and ci. For the first "
+            "deploy against an empty database only: it creates missing tables "
+            "but cannot ALTER existing ones, so it is not a migration strategy. "
+            "Turn it off once the tables exist."
+        ),
+    )
 
     # --- Anthropic / agent --------------------------------------------------
     anthropic_api_key: str | None = None

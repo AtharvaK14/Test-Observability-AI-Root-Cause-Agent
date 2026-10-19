@@ -139,3 +139,33 @@ class TestDocs:
         deployed = build_client(environment=environment, api_key=SecretStr(KEY))
         assert deployed.get(path).status_code == 404
         assert deployed.get(path, headers={"X-API-Key": KEY}).status_code == 404
+
+
+class TestSchemaBootstrap:
+    """Which startups run create_all(). Lives here because it shares the
+    deployed-config fixtures; the decision is the only part worth testing."""
+
+    @pytest.mark.parametrize("environment", ["local", "ci"])
+    def test_development_always_creates(self, settings: Settings, environment: str) -> None:
+        from backend.main import schema_bootstrap_reason
+
+        configured = settings.model_copy(update={"environment": environment})
+        assert schema_bootstrap_reason(configured) == "development mode"
+
+    def test_prod_skips_by_default(self, settings: Settings) -> None:
+        from backend.main import schema_bootstrap_reason
+
+        configured = settings.model_copy(update={"environment": "prod"})
+        assert schema_bootstrap_reason(configured) is None
+
+    def test_prod_creates_when_opted_in(self, settings: Settings) -> None:
+        from backend.main import schema_bootstrap_reason
+
+        configured = settings.model_copy(
+            update={"environment": "prod", "create_schema_on_start": True}
+        )
+        assert schema_bootstrap_reason(configured) == "CREATE_SCHEMA_ON_START"
+
+    def test_flag_parses_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CREATE_SCHEMA_ON_START", "true")
+        assert Settings().create_schema_on_start is True
