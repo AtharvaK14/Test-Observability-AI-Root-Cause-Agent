@@ -1,413 +1,367 @@
+<div align="center">
+
 # Test Observability + AI Root-Cause Agent
 
-Ingests test results from **Playwright, Cypress, PyTest and Selenium**, then uses
-**Claude** to work out *why* each failure happened — app bug, flaky test,
-environment, test data, infrastructure, or external dependency — with the
-evidence it used and what to do about it.
+**Collects test results from Playwright, Cypress, PyTest and Selenium, and tells you *why* each failure happened.**
 
-> **Status:** backend complete, 217 backend tests plus 24 eval-harness tests, `mypy --strict` clean, verified
-> end-to-end against real Playwright, Cypress and PyTest suites. Frontend not
-> built yet.
+[![CI](https://github.com/AtharvaK14/Test-Observability-AI-Root-Cause-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/AtharvaK14/Test-Observability-AI-Root-Cause-Agent/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude-agent-D97757?logo=anthropic&logoColor=white)
+![mypy](https://img.shields.io/badge/mypy-strict-2A6DB2)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [API](#api) · [Performance](#performance) · [Setup guide](docs/SETUP.md)
+
+</div>
 
 ---
 
-## The problem
+CI goes red and all you get is something like `Timeout 30000ms exceeded`. That
+one message can come from an app hang, a missing wait, a starved runner or a
+dead downstream service. This service collects the evidence an engineer would
+check (test history, commit range, what else failed in the run, timing against
+the passing baseline) and hands it to a classifier. That classifier is either a
+Claude agent or a rule-based engine, and it picks one of seven root causes,
+lists the evidence behind the choice and suggests next steps.
 
-A CI run goes red. You get a binary signal and a wall of logs. Working out
-whether the application broke, the test is flaky, or the environment wobbled
-takes an hour of clicking through artefacts — per failure — and the answer is
-usually "someone should look at this later".
+## Features
 
-The naive fix is to paste the error into an LLM. That plateaus fast, because
-**the error message is the least discriminating evidence available**:
+- **Four frameworks, one schema.** Parsers for Playwright, Cypress (module API, mochawesome, mocha), PyTest (`pytest-json-report`) and Selenium (JUnit/TestNG XML), plus any JUnit XML.
+- **Retry-aware ingestion.** Each retry attempt gets its own row, so a test that fails and then passes is stored as `FLAKY` instead of disappearing into a green build.
+- **Evidence-first context.** Run history, last-pass vs first-fail commit, CI-run blast radius, duration vs baseline, signature spread and host metrics. Missing data is marked unavailable, never invented.
+- **Claude agent with tools.** The agent can pull stack traces, grep logs and check sibling tests before it submits a verdict through a strict, schema-validated tool call.
+- **Rule-based classifier.** No API key, no network, zero cost. Doubles as the baseline the agent is measured against.
+- **Deterministic clustering.** Normalised error fingerprints group hundreds of red tests into the handful of problems behind them. Known issues can be muted.
+- **Flakiness and trend verdicts.** Every test is graded healthy, flaky, broken, degrading or unreliable from its run history.
+- **Feedback loop.** Reviewers record the correct category, which feeds accuracy, a confusion matrix, token spend and latency on `/api/analysis/metrics`.
+- **Horizontal scale.** Optional Redis queue with separately scaled workers, load-tested on Kubernetes with k6.
+- **Built-in eval harness.** 27 cases, 11 of them taken from real CI failures, scored for accuracy, grounding, consistency, calibration and prompt-injection resistance.
 
+## How it works
+
+```mermaid
+flowchart TB
+    subgraph S1["Ingest"]
+        direction LR
+        R["CI test reports<br/>Playwright · Cypress<br/>PyTest · Selenium"] -->|"POST /ingest/{framework}"| P["Parsers<br/>one row per attempt"]
+        P --> I["Ingestion<br/>fingerprint, dedupe,<br/>cluster"]
+    end
+
+    subgraph S2["Analyse"]
+        direction LR
+        Q[["Redis queue<br/>or in-process task"]] --> C["Context retriever<br/>history, commits,<br/>blast radius, timing"]
+        C --> M{"ANALYSIS_MODE"}
+        M -->|heuristic| H["Rule-based<br/>classifier"]
+        M -->|claude| A["Claude agent<br/>+ 5 retrieval tools"]
+        H --> V["Verdict<br/>category, confidence,<br/>evidence, fixes"]
+        A --> V
+    end
+
+    subgraph S3["Serve"]
+        direction LR
+        DB[("PostgreSQL")] --> API["/api/analysis/*"]
+        API --> F["Reviewer feedback"]
+        F -.->|"accuracy, confusion matrix"| DB
+    end
+
+    S1 --> S2 --> S3
 ```
-Timeout 30000ms exceeded waiting for locator('#place-order')
-```
 
-That exact string is emitted by a genuine application hang, a missing wait, a
-CPU-starved runner, and a dead downstream service. No model can tell them apart
-from the message alone, because the information is not in the message.
+### What the classifier looks at
 
-## What this does instead
-
-It answers the questions a good SDET would ask *before* forming an opinion, and
-hands the model the answers:
-
-| Question | Signal | Why it discriminates |
+| Signal | Source | What it tells you |
 |---|---|---|
-| Has this test been reliable? | 30-run history, pass rate, streak | 200 green runs then red ⇒ something changed. Alternating for weeks ⇒ the test. |
-| Did the code change? | Last passing commit vs failing commit | Passed *and* failed on the **same commit** ⇒ not a regression. Full stop. |
-| What else broke? | Every other failure in the same CI run | One test ⇒ that feature. Whole suite ⇒ shared setup. **Different frameworks ⇒ the app or the environment**, because independent test code cannot break together by chance. |
-| Was it waiting or dying? | Duration vs this test's passing baseline | Burned the timeout ⇒ waiting (race, slow dependency). Died in 200ms ⇒ genuinely absent. Same message, different owner. |
-| Is this failure unique? | Normalised error fingerprint across all tests | One signature in unrelated tests ⇒ one shared cause, not N test defects. |
-| Was the machine healthy? | CPU/memory/network at execution time | A 98%-CPU runner explains a timeout that no amount of reading the test will. |
+| Run history | Last 30 runs: pass rate, streak | A long green streak then red means something changed. Alternating for weeks means the test. |
+| Commit range | Last passing vs failing commit | Passed and failed on the same commit: not a regression. |
+| Blast radius | Other failures in the same CI run | Failures across different frameworks point at the app or the environment, not the tests. |
+| Duration | This run vs the passing baseline | Burned the full timeout means it was waiting. Died in 200 ms means something was missing. |
+| Signature spread | Normalised error fingerprint across all tests | One signature in unrelated tests means one shared cause. |
+| Host metrics | CPU, memory, disk I/O, network latency, when the runner sends them | A runner at 98% CPU explains a timeout that reading the test never will. |
 
-Then the agent can **investigate further on its own** — pull the full stack
-trace, grep the logs for `ECONNREFUSED`, check a sibling test's history — and
-finally submit a schema-validated verdict.
+### The agent loop
 
----
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Worker
+    participant A as Claude agent
+    participant T as Retrieval tools
+    participant DB as PostgreSQL
 
-> **New here?** [docs/SETUP.md](docs/SETUP.md) is a step-by-step walkthrough
-> written for someone who has never run this before — every command, what you
-> should see, and what to do when it goes wrong. The quick start below assumes
-> you're comfortable with a terminal.
+    W->>A: Failure + measured context
+    loop Up to 4 turns
+        A->>T: get_full_stack_trace / search_logs / get_test_history<br/>get_ci_run_summary / find_similar_failures
+        T->>DB: Query
+        DB-->>T: Rows
+        T-->>A: Evidence
+    end
+    A->>W: submit_classification (strict JSON schema)
+    W->>DB: Append verdict with model, prompt_version, tokens, latency
+```
 
-## Quick start — no API key, no Docker, no database to install
+Analyses are append-only, so verdicts from different prompt versions or models
+can be compared on the same failures.
+
+### Root-cause categories
+
+| Category | Owner | Typical action |
+|---|---|---|
+| 🐞 `app_bug` | Dev team | File a defect. The test did its job. |
+| 🎲 `flaky_test` | Test author | Fix the wait, locator or ordering. The app is fine. |
+| 🌐 `environment` | Platform team | Check deploys and service health. |
+| 🗃️ `test_data` | Test author | Refresh the fixture or seed data. |
+| 🖥️ `infrastructure` | CI platform | Runner OOM, disk, permissions, image drift. |
+| 🔌 `external_dependency` | Third party | Stub it or add a readiness gate. |
+| ❓ `unknown` | Reviewer | Not enough evidence. Flagged for review instead of guessed. |
+
+### Example verdict
+
+A Playwright test and a PyTest test failed with the same error in one CI run.
+Below is one item from `GET /api/analysis/failures`, trimmed. It comes from the
+demo dataset with the rule-based classifier.
+
+```json
+{
+  "test": {
+    "test_name": "search.spec.ts > returns results for a known term",
+    "framework": "playwright",
+    "status": "failed",
+    "error_message": "Error: connect ECONNREFUSED 10.0.4.19:9200 (search-index)",
+    "ci_run_id": "seed-run-023"
+  },
+  "analysis": {
+    "root_cause": "environment",
+    "confidence_score": 0.78,
+    "key_evidence": [
+      "matched connectivity signal: 'ECONNREFUSED'",
+      "1 test(s) in other frameworks failed with the identical error signature in this CI run"
+    ],
+    "suggestions": [
+      "Check service health and deploy events for this environment at this time",
+      "Confirm the dependency was reachable from the CI network",
+      "Consider a readiness gate before the suite starts"
+    ],
+    "requires_human_review": false,
+    "model": "heuristic-v1"
+  }
+}
+```
+
+### Flakiness and trends
+
+Flakiness is scored as **instability**: the share of consecutive runs whose
+outcome flipped. A test that fails every time is broken, not flaky.
+
+| Daily results, oldest to newest | Pass rate | Instability | Verdict |
+|---|:---:|:---:|:---:|
+| ✅✅✅✅✅✅✅✅✅✅ | 100% | 0.00 | **healthy** |
+| ✅❌✅❌✅❌✅❌✅❌ | 50% | 1.00 | **flaky** |
+| ❌❌❌❌❌❌❌❌❌❌ | 0% | 0.00 | **broken** |
+| ✅✅✅✅✅✅✅❌❌❌ | 70% | 0.11 | **degrading** |
+
+## Quick start
+
+Runs the whole pipeline on SQLite with the rule-based classifier. No API key,
+no Docker, no database to install.
 
 ```bash
 python -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env                   # defaults work as is
+
+python scripts/seed_demo.py --reset    # 3 weeks of history, 10 planted failures
+uvicorn backend.main:app --reload      # terminal 1
+python scripts/analyze_pending.py      # terminal 2: classify every failure
 ```
 
-Then, using the venv's interpreter directly — no activation needed, and it can't
-silently fall back to system Python (`.venv/bin/python` on macOS/Linux):
+Open <http://localhost:8000/docs> for the interactive API. New to Python
+tooling? [docs/SETUP.md](docs/SETUP.md) walks through every step on Windows,
+with troubleshooting.
 
-```powershell
-.venv/Scripts/python -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env                        # defaults need no editing
-.venv/Scripts/python scripts/seed_demo.py --reset  # 3 weeks of history, 10 planted failures
-.venv/Scripts/python -m uvicorn backend.main:app --reload
-```
+**Use Claude:** set `ANTHROPIC_API_KEY` and `ANALYSIS_MODE=claude` in `.env`.
 
-Then in a **second** terminal — easy to miss, and without it the dashboard has
-data but no verdicts:
+### Run it your way
 
-```powershell
-.venv/Scripts/python scripts/analyze_pending.py    # classify every failure
-```
+| Target | Command | What you get |
+|---|---|---|
+| Local | `uvicorn backend.main:app` | SQLite, in-process analysis |
+| Docker Compose | `docker compose up --build` | API + PostgreSQL |
+| Kubernetes (kind) | `./k8s/deploy.sh` | 2 API replicas, PostgreSQL, Redis, N analysis workers |
+| AWS | `deploy/up.sh` | ECS Fargate + RDS, deployed by GitHub Actions over OIDC. See [deploy/README.md](deploy/README.md) |
 
-- API + interactive docs: <http://localhost:8000/docs>
-- Health: <http://localhost:8000/health/ready>
-
-That runs the **whole pipeline** — ingest, fingerprint, cluster, classify,
-trends, feedback — on SQLite with a rule-based classifier. Zero cost, zero
-network, no API key, no Postgres.
-
-### With Claude
-
-Set `ANTHROPIC_API_KEY` and `ANALYSIS_MODE=claude`. Roughly $0.05 per analysis
-on `claude-sonnet-5`, $0.13 on `claude-opus-5`; `/api/analysis/metrics` reports
-your actual token spend.
-
-### With PostgreSQL
-
-```bash
-docker compose up --build      # provisions Postgres + the API
-```
-
-### On Kubernetes (local, kind)
-
-The full distributed setup — two API replicas, PostgreSQL, Redis, and a
-separately scaled analysis worker — runs on a local [kind](https://kind.sigs.k8s.io/)
-cluster. No cloud account, no registry: the image is side-loaded into the cluster.
-
-```bash
-kind create cluster --name root-cause-agent
-./k8s/deploy.sh                                   # build, load, apply, wait
-kubectl port-forward service/root-cause-agent 8000:8000
-./loadtest/run-in-cluster.sh                      # k6, in-cluster, from an empty DB
-```
-
-```
-CI ──► Service ──► API ×2 ──commit──► PostgreSQL
-                     │                    ▲
-                     └─ LPUSH ─► Redis ─BLMOVE─► analysis-worker ×N
-```
-
-Measured results, with the exact commands, are in
-[docs/load-test-results.md](docs/load-test-results.md).
-
-### Uploading a real report
+### Send a report from CI
 
 ```bash
 curl -X POST http://localhost:8000/ingest/playwright \
+  -H "X-API-Key: $API_KEY" \
   -F "file=@playwright-report.json" \
-  -F "ci_run_id=local-1" -F "git_commit=$(git rev-parse HEAD)" \
+  -F "ci_run_id=$GITHUB_RUN_ID" \
+  -F "git_commit=$(git rev-parse HEAD)" \
   -F "git_branch=$(git rev-parse --abbrev-ref HEAD)"
-
-curl "http://localhost:8000/api/analysis/failures?hours=24"
 ```
 
-## Two classifiers, and why that matters
-
-| | `ANALYSIS_MODE=heuristic` | `ANALYSIS_MODE=claude` |
-|---|---|---|
-| Needs an API key | no | yes |
-| Cost per analysis | £0 | ~$0.05–0.13 |
-| Reads the stack trace | no | yes |
-| Judges whether a locator is brittle | no | yes |
-| Confidence ceiling | 0.80 | unbounded |
-
-The rule-based classifier is not a downgrade — it is the **control group**.
-"The agent classifies 82% correctly" is unfalsifiable on its own; "the agent
-gets 82% where deterministic rules get 54%" is a result. (Illustrative
-numbers, not measured ones; see the warning below.) Verdicts from each are
-tagged with distinct `prompt_version` values so their accuracies stay separable.
-
-```bash
-python scripts/score_classifier.py                 # rule-based
-python scripts/score_classifier.py --mode claude   # the agent (costs money)
-```
-
-> ⚠️ The seeded scenarios and the heuristic rules share an author, so the rules
-> match the plants by construction and score near-perfectly. That validates the
-> **pipeline**, not the classifier. A quotable accuracy figure needs real
-> failures adjudicated through the feedback endpoint.
-
----
-
-## Architecture
-
-```
-CI (Playwright / Cypress / PyTest / Selenium)
-   │  POST /ingest/{framework}  + git sha, branch, ci_run_id
-   ▼
-┌──────────────────────────────────────────────────────────┐
-│ Parsers          backend/ingest/                         │
-│   framework JSON/XML -> one normalised TestResultCreate   │
-│   one row per RETRY ATTEMPT (fail→pass = FLAKY)          │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│ Ingestion        backend/ingest/service.py               │
-│   fingerprint · dedupe (idempotent) · cluster · queue     │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│ Context          backend/analysis/context_retriever.py   │
-│   history · blast radius · duration ratio · signature     │
-│   spread · commit range · host metrics                   │
-│   ← measured only; never fabricated                      │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│ Agent            backend/analysis/agent.py               │
-│   Claude + 5 retrieval tools + strict verdict schema     │
-│   loop until submit_classification, max 4 turns          │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼
-     PostgreSQL  →  GET /api/analysis/*  →  dashboard
-                            ▲
-                            └── POST feedback → accuracy + confusion matrix
-```
-
-### Layout
-
-```
-backend/
-  models/      Pydantic schemas + shared enums  (the wire contract)
-  db/          SQLAlchemy models, session, repositories  (the storage contract)
-  ingest/      Per-framework parsers + the ingestion service
-  analysis/    clustering.py · context_retriever.py · agent.py · heuristics.py · dispatch.py
-  worker.py    Redis queue consumer (python -m backend.worker)
-  api/         ingest.py (write) · analysis.py (read)
-  tests/       217 tests, SQLite + stubbed client + fakeredis, no network
-scripts/       seed_demo · analyze_pending · score_classifier · dump_schema
-db/            schema.sql (generated) · migrations/
-ci/            Dockerfile + example GitHub Actions workflow
-k8s/           kind manifests (API, worker, Postgres, Redis) + deploy.sh
-loadtest/      k6 script + in-cluster runner
-docs/          SETUP.md — step-by-step walkthrough
-```
-
----
-
-## Design decisions worth defending
-
-**Never fabricate context.** The reference design in the spec returns hard-coded
-`cpu_percent: 65.2` and an invented `changed_files` list. That is worse than
-returning nothing: a model reasoning over fabricated evidence produces a
-confident, well-argued, wrong answer, and the confidence score makes it look
-trustworthy. Every field here is measured or explicitly marked unavailable, and
-the model is told which is which.
-
-**Clustering is deterministic and LLM-free.** 487 red tests overnight is
-normally 3–4 actual problems. Collapsing them needs a hash, not a model — so it
-keeps working during an API outage, costs nothing, and is unit-testable. It also
-cuts spend by two orders of magnitude if you analyse one representative per
-cluster.
-
-**One row per retry attempt.** A test that fails then passes on retry is
-reported by every runner as a pass, the suite goes green, and nobody looks
-again — which is exactly the failure worth investigating. The final attempt is
-stored as `FLAKY`, not `PASSED`. Dashboard counts collapse retry groups back to
-one row so a single flaky test is not counted three times.
-
-**Analyses are append-only.** Re-running the agent adds a row instead of
-overwriting one, so "did prompt v3 classify better than v2 on the same
-failures?" is answerable. Every row carries its `prompt_version`, model, token
-counts and latency.
-
-**Feedback records the correction, not just the complaint.** "Wrong" teaches
-nothing. "You said `flaky_test`, it was `test_data`" is a labelled example, and
-the aggregate is a ranked confusion matrix on `/api/analysis/metrics` — the
-prompt-improvement backlog, ordered by how often each confusion actually
-happens.
-
-**Endpoints are `def`, not `async def`.** They do blocking database work, so
-Starlette runs them in a threadpool. `async def` around a blocking driver call
-stalls the entire event loop — the most common FastAPI performance bug, and one
-the spec's sample code contains.
-
-**Structured output via a `strict` tool, not text parsing.** The spec searches
-the response for a marker and slices between the first `{` and last `}`. That
-breaks the first time the model writes a brace in its prose, and breaks
-silently. Here the verdict arrives as a schema-validated tool call and is
-re-validated by Pydantic; an invalid one is handed back to the model to correct.
-
----
+The `X-API-Key` header is only checked when `API_KEY` is set (it is required in
+staging and prod). A ready-to-use GitHub Actions workflow is in
+[ci/github-actions/ingest-test-results.yml](ci/github-actions/ingest-test-results.yml).
 
 ## API
 
-### Ingest (what CI calls)
+**Ingest**
 
 | Endpoint | Accepts |
 |---|---|
 | `POST /ingest/playwright` | `playwright test --reporter=json` |
-| `POST /ingest/cypress` | module API, mochawesome, or mocha JSON — auto-detected |
+| `POST /ingest/cypress` | Module API, mochawesome or mocha JSON (auto-detected) |
 | `POST /ingest/pytest` | `pytest --json-report` |
-| `POST /ingest/selenium` | JUnit/TestNG XML or normalised JSON — sniffed |
-| `POST /ingest/junit?framework=…` | any JUnit XML; framework attribution required |
-| `POST /ingest/results` | already-normalised JSON body |
+| `POST /ingest/selenium` | JUnit/TestNG XML or normalised JSON |
+| `POST /ingest/junit?framework=…` | Any JUnit XML |
+| `POST /ingest/results` | Pre-normalised JSON body |
 
-Form fields on every upload: `ci_run_id`, `environment`, `git_commit`,
-`git_branch`, `ci_provider`, `ci_job_url`.
+Every upload reports `ingested`, `skipped_duplicates`, `failures_detected`,
+`analyses_queued` and per-entry warnings.
 
-Responses report `ingested`, `skipped_duplicates`, `failures_detected`,
-`analyses_queued` and any per-entry warnings — a pipeline told `{"status":
-"success"}` while 380 of 400 results were dropped is worse than no observability
-at all.
-
-### Analysis (what the dashboard calls)
+**Analysis**
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/analysis/summary` | counters, root-cause distribution, framework breakdown |
-| `GET /api/analysis/failures` | paginated feed with verdicts; filter by framework, root cause, review status |
-| `GET /api/analysis/failures/{id}` | one failure: every verdict, its cluster, its CI-run siblings |
-| `GET /api/analysis/tests/{name}/trends` | daily pass rate + a **verdict**: healthy / flaky / broken / degrading |
-| `GET /api/analysis/flaky` | flakiness leaderboard (with a `min_runs` floor) |
-| `GET /api/analysis/clusters` | recurring patterns, biggest first — the real triage queue |
-| `GET /api/analysis/metrics` | accuracy, feedback coverage, confusion matrix, token spend, latency |
-| `POST /api/analysis/analyses/{id}/feedback` | adjudicate a verdict (upsert per reviewer) |
-| `POST /api/analysis/clusters/{id}/mute` | acknowledge a known issue; stops re-analysis |
+| `GET /api/analysis/summary` | Counters, root-cause distribution, framework breakdown |
+| `GET /api/analysis/failures` | Paginated failures with verdicts, filterable by framework, root cause, review status |
+| `GET /api/analysis/failures/{id}` | One failure with every verdict, its cluster and its CI-run siblings |
+| `GET /api/analysis/tests/{name}/trends` | Daily pass rate and a health verdict |
+| `GET /api/analysis/flaky` | Flakiness leaderboard |
+| `GET /api/analysis/clusters` | Recurring failure patterns, largest first |
+| `GET /api/analysis/metrics` | Accuracy, confusion matrix, token spend, latency |
+| `GET /api/analysis/queue` | Failures waiting for analysis |
+| `POST /api/analysis/analyses/{id}/feedback` | Record a reviewer's verdict |
+| `POST /api/analysis/clusters/{id}/mute` | Acknowledge a known issue and stop re-analysis |
 
-`GET /api/analysis/queue` lists failures awaiting analysis — also the recovery
-path after a restart, since background tasks die with the process.
+## Performance
 
----
+Load-tested with k6 on a local kind cluster: 2 API replicas, PostgreSQL, Redis
+and a separately scaled analysis worker.
 
-## Flakiness, measured properly
+```mermaid
+flowchart LR
+    K6["CI / k6"] --> S["Service"]
+    S --> A1["API pod"] & A2["API pod"]
+    A1 & A2 -->|commit| PG[("PostgreSQL")]
+    A1 & A2 -->|LPUSH| R[("Redis")]
+    R -->|BLMOVE| W["analysis-worker × N"]
+    W --> PG
+```
 
-Flakiness here is **instability**, not failure rate: the share of consecutive
-run pairs whose outcome changed.
+| | In-process analysis | Redis queue, 4 workers |
+|---|:---:|:---:|
+| Ingest throughput | 54 to 64 req/s | **161 to 171 req/s** |
+| Ingest latency p50 | 250 to 257 ms | **13 to 20 ms** |
+| Failed requests | 0 | 0 |
+| Lost counter updates | 0 | 0 |
 
-- alternates pass/fail/pass/fail → score ≈ 1.0 → **flaky**
-- fails every single run → score 0.0 → **broken**, not flaky
+```mermaid
+%%{init: {"xyChart": {"width": 640, "height": 340}, "themeVariables": {"xyChart": {"plotColorPalette": "#6366f1"}}}}%%
+xychart-beta
+    title "Queue drain throughput by worker count"
+    x-axis "Analysis workers" ["1", "2", "4"]
+    y-axis "Jobs per second" 0 --> 250
+    bar [59, 120, 232]
+```
 
-Both need attention, but they need *different* attention, and calling a
-reliably-broken test "50% flaky" sends someone hunting for a race condition that
-does not exist. The leaderboard also enforces a `min_runs` floor, because a test
-that ran twice and failed once is not 50% flaky — it is unmeasured.
+Drain throughput scales close to linearly with workers. A worker killed mid-job
+has its claimed jobs requeued within 13 s. All runs, the three concurrency bugs
+the test uncovered and how to reproduce it are in
+[docs/load-test-results.md](docs/load-test-results.md).
 
----
+## Evaluation
 
-## Configuration
+The eval harness in [evals/root_cause](evals/root_cause/README.md) replays real
+CI history through the production ingest path and grades verdicts without an
+LLM judge. CI runs the free offline modes on every pull request and every push
+to `main`.
 
-Everything is in [.env.example](.env.example). The ones that matter:
+| Case source | Cases | Rule-based baseline |
+|---|:---:|:---:|
+| Real CI failures | 11 | 55% (95% CI: 28% to 79%) |
+| Prompt-injection variants | 6 | 67% |
+| Synthetic (harness check only) | 10 | 100% by construction |
 
-| Variable | Default | Notes |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | — | Unset ⇒ ingestion works, analysis is skipped |
-| `ANTHROPIC_MODEL` | `claude-opus-5` | `claude-sonnet-5` to trade depth for cost at volume |
-| `ANTHROPIC_EFFORT` | `high` | `low`…`max` |
-| `AGENT_ENABLED` | `true` | Kill switch — zero API spend when false |
-| `AUTO_ANALYZE_ON_INGEST` | `true` | Otherwise analyse on demand only |
-| `AGENT_MAX_ITERATIONS` | `4` | Tool-use turns before a verdict is forced |
-| `GIT_REPO_PATH` | unset | Optional checkout for real commit metadata |
-| `REDIS_URL` | unset | Set ⇒ analyses go to a Redis queue consumed by `python -m backend.worker`; unset ⇒ in-process background tasks |
+The Claude agent has not been run against this set yet. Live runs are gated
+behind a reviewed harness approval and a hard spend budget.
 
-Cost controls, in order of impact: mute known clusters, disable
-`AUTO_ANALYZE_ON_INGEST` and analyse per cluster, lower `ANTHROPIC_EFFORT`, or
-switch model. Non-final retry attempts are never analysed.
+## Project structure
 
----
+```
+backend/
+├── api/          REST routes: ingest (write) and analysis (read)
+├── ingest/       Per-framework parsers and the ingestion service
+├── analysis/     Context retriever, Claude agent, rule-based classifier, clustering
+├── db/           SQLAlchemy models, sessions, repositories
+├── models/       Pydantic schemas and shared enums
+├── worker.py     Redis queue consumer
+└── tests/        217 tests: in-memory SQLite, stubbed Claude client, fakeredis
+evals/            Root-cause eval harness, cases and grading
+scripts/          seed_demo, analyze_pending, score_classifier, dump_schema
+k8s/              kind manifests and deploy script
+loadtest/         k6 script and in-cluster runner
+deploy/           AWS scripts and IAM policies
+ci/               Dockerfile and example ingest workflow
+db/               Generated schema.sql and Alembic migrations
+docs/             Setup guide and load-test results
+```
 
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
-pytest                                        # 241 tests (217 backend + 24 eval), no network, no key
-mypy                                          # strict, clean
-ruff check backend/ scripts/
-python scripts/dump_schema.py > db/schema.sql # after any model change
+pytest                                          # 241 tests, no network, no API key
+mypy                                            # strict
+ruff check backend/ scripts/ evals/
+python scripts/dump_schema.py > db/schema.sql   # after any model change
 ```
 
-Scripts:
+CI runs lint, type checks and tests on Python 3.11 and 3.13, checks that
+`db/schema.sql` matches the ORM, runs the offline eval and builds the Docker
+image.
 
-| | |
-|---|---|
-| `seed_demo.py --reset` | 3 weeks of labelled history across 4 frameworks |
-| `analyze_pending.py` | Classify every unanalysed failure. Also the restart-recovery path — background tasks die with the process |
-| `score_classifier.py [--mode claude]` | Score a classifier against the seeded ground truth |
-| `dump_schema.py` | Regenerate `db/schema.sql` from the ORM |
+<details>
+<summary><b>Configuration</b></summary>
 
-The test suite runs entirely on in-memory SQLite with a stubbed Anthropic
-client. That is deliberate: a suite that needs Postgres running and a funded API
-key is a suite that gets skipped, and a skipped suite protects nothing. A
-`TypeDecorator` forces UTC-aware datetimes on both dialects so the SQLite path
-behaves like production instead of hiding timezone bugs.
+<br>
 
-### Migrations
+All settings live in [.env.example](.env.example). The main ones, with the
+values it ships with:
 
-`db/schema.sql` is generated from the ORM and applied automatically by
-docker-compose on first start — fresh installs need nothing else. For an
-existing database, use Alembic:
+| Variable | `.env.example` | Purpose |
+|---|---|---|
+| `ANALYSIS_MODE` | `heuristic` | `heuristic` (rules, free) or `claude` (agent) |
+| `ANTHROPIC_API_KEY` | unset | Required for `claude` mode |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | Model the agent uses |
+| `ANTHROPIC_EFFORT` | `high` | `low`, `medium`, `high`, `xhigh` or `max` |
+| `AGENT_MAX_ITERATIONS` | `4` | Tool-use turns before a verdict is forced |
+| `AUTO_ANALYZE_ON_INGEST` | `true` | Analyse on upload, or on demand only |
+| `DATABASE_URL` | SQLite file | `postgresql+psycopg://…` in production |
+| `REDIS_URL` | unset | Set to move analysis onto the Redis queue |
+| `API_KEY` | unset | Shared key for every route, required in staging and prod |
+| `GIT_REPO_PATH` | unset | Checkout of the app under test, for real commit metadata |
 
-```bash
-alembic revision --autogenerate -m "describe the change"
-alembic upgrade head
-```
+</details>
 
-No initial revision is checked in on purpose: autogenerate reads its dialect
-from the connected database, so one generated against SQLite would emit SQLite
-types (no `JSONB`, no `TIMESTAMPTZ`) and break on Postgres. Generate it against
-the real target.
+## Roadmap
 
----
+- [x] Parsers for Playwright, Cypress, PyTest and Selenium
+- [x] Rule-based classifier and Claude agent
+- [x] Clustering, flakiness scoring and trend verdicts
+- [x] Redis queue, Kubernetes manifests and load test
+- [x] Offline eval harness in CI
+- [ ] Web dashboard
+- [ ] Live Claude run against the eval set
+- [ ] Per-client API keys with scopes and rotation
+- [ ] Embedding-based similarity for near-duplicate failures
 
-## CI integration
+## License
 
-[ci/github-actions/ingest-test-results.yml](ci/github-actions/ingest-test-results.yml)
-is a working example. Two things in it are easy to get wrong:
-
-- It uses `workflow_run.head_sha`, **not** `github.sha`. A `workflow_run` event
-  fires on a different ref, so `github.sha` is the wrong commit — and a wrong
-  commit silently breaks the pass→fail range inference.
-- It runs `if: always()`. A pipeline that only uploads results when it passes
-  never uploads a single failure.
-
-Ingestion never fails the build. Observability that can break a deploy gets
-switched off within a week.
-
----
-
-## Not built yet
-
-- **Frontend.** The API is complete and documented; the React dashboard is next.
-- **Per-client auth.** One shared API key (`API_KEY`, sent as `X-API-Key`)
-  guards every ingest and analysis route and is mandatory in staging and prod.
-  There are no per-client keys, scopes, or rotation yet.
-- **Vector similarity.** Clustering is exact-hash. Near-miss failures that
-  normalise differently stay in separate clusters; embeddings would catch them.
-- **Real accuracy numbers.** The measurement machinery is built and tested, and
-  the parsers are verified against real Playwright, Cypress and PyTest output —
-  but publishing an accuracy figure requires adjudicating a meaningful number of
-  real failures, which is in progress. `/api/analysis/metrics` reports
-  `feedback_coverage` alongside `accuracy`, so 100% over two reviewed analyses is
-  visibly what it is rather than a headline.
-- **A live Claude call.** The agent's request shape is built against the current
-  API and verified against a stubbed client across 26 tests (refusals, rate
-  limits, malformed verdicts, loop exhaustion), but the LLM path has not yet been
-  exercised against the real API. The rule-based classifier has.
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Atharva Kadam.
