@@ -48,3 +48,11 @@ loadtest/*.json
 .claude/hillclimb/**/traces/
 .claude/hillclimb/**/report.html
 .claude/hillclimb/**/trajectory/
+
+# AWS deploy (deploy/): discovered IDs, local overrides, exported credentials,
+# and any Terraform state if IaC is ever added. None of it belongs in git.
+*.tfstate
+*.tfstate.*
+deploy/.state/
+deploy/*.local
+aws-export*

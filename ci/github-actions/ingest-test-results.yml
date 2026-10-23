@@ -2,6 +2,11 @@
 #
 # Copy into .github/workflows/ in the repository whose tests you want analysed.
 #
+# Repository secrets it needs:
+#   OBSERVABILITY_AGENT_URL  base URL of the agent, no trailing slash
+#   OBSERVABILITY_API_KEY    the agent's API_KEY, sent as the X-API-Key header
+#                            (a deployed agent rejects requests without it)
+#
 # The important part is not the curl — it is the metadata. A test reporter has
 # no idea what commit it ran against or which pipeline invoked it, and without
 # that the system cannot compute a test's history, bound a suspect commit range,
@@ -34,6 +39,7 @@ jobs:
       - name: Upload to the observability agent
         env:
           AGENT_URL: ${{ secrets.OBSERVABILITY_AGENT_URL }}
+          API_KEY: ${{ secrets.OBSERVABILITY_API_KEY }}
           # The commit the TESTS ran against, not the commit that triggered this
           # workflow. `workflow_run` fires on a separate ref, so
           # ${{ github.sha }} here would be the wrong SHA — and a wrong SHA
@@ -53,6 +59,7 @@ jobs:
             curl --fail-with-body --silent --show-error \
               --max-time 120 --retry 3 --retry-connrefused \
               -X POST "${AGENT_URL}/ingest/${endpoint}" \
+              -H "X-API-Key: ${API_KEY}" \
               -F "file=@${file}" \
               -F "ci_run_id=${RUN_ID}" \
               -F "environment=staging" \
@@ -72,11 +79,14 @@ jobs:
           if [ -f ./results/selenium-results/junit.xml ]; then
             curl --fail-with-body --silent --show-error --max-time 120 --retry 3 \
               -X POST "${AGENT_URL}/ingest/junit?framework=selenium" \
+              -H "X-API-Key: ${API_KEY}" \
               -F "file=@./results/selenium-results/junit.xml" \
               -F "ci_run_id=${RUN_ID}" \
+              -F "environment=staging" \
               -F "git_commit=${GIT_SHA}" \
               -F "git_branch=${GIT_BRANCH}" \
               -F "ci_provider=github-actions" \
+              -F "ci_job_url=${JOB_URL}" \
               || echo "::warning::upload failed for junit.xml"
           fi
 

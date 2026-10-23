@@ -51,6 +51,9 @@ def settings() -> Settings:
         agent_enabled=False,
         auto_analyze_on_ingest=False,
         anthropic_api_key="test-key-not-used",
+        # Explicit so a developer's .env with API_KEY set cannot switch auth on
+        # for the whole suite.
+        api_key=None,
     )
 
 

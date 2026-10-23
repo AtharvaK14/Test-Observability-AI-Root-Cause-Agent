@@ -2,7 +2,7 @@
 
 Run locally:      uvicorn backend.main:app --reload
 Run in Docker:    docker compose up
-API docs:         http://localhost:8000/docs
+API docs:         http://localhost:8000/docs (local and ci only)
 """
 
 from __future__ import annotations
@@ -22,11 +22,27 @@ from backend import __version__
 from backend.analysis import dispatch
 from backend.api import analysis as analysis_routes
 from backend.api import ingest as ingest_routes
+from backend.api.deps import ApiKeyDep
 from backend.config import Settings, get_settings
 from backend.db.session import create_all, get_engine, init_engine
 from backend.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+def schema_bootstrap_reason(settings: Settings) -> str | None:
+    """Why startup should run ``create_all()``, or None if it should not.
+
+    Convenient locally, wrong in production: create_all cannot ALTER an
+    existing table, so a schema change appears to succeed and then fails at
+    runtime with an undefined-column error. Production goes through
+    db/schema.sql or Alembic, except for the explicit first-deploy opt-in.
+    """
+    if settings.environment in ("local", "ci"):
+        return "development mode"
+    if settings.create_schema_on_start:
+        return "CREATE_SCHEMA_ON_START"
+    return None
 
 
 @asynccontextmanager
@@ -36,13 +52,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings)
     init_engine(settings)
 
-    if settings.environment in ("local", "ci"):
-        # Convenient locally, wrong in production: create_all cannot ALTER an
-        # existing table, so a schema change appears to succeed and then fails
-        # at runtime with an undefined-column error. Production goes through
-        # db/schema.sql or Alembic.
+    reason = schema_bootstrap_reason(settings)
+    if reason is not None:
         create_all()
-        logger.info("created tables via create_all (development mode)")
+        logger.info("created missing tables via create_all", extra={"reason": reason})
+    else:
+        logger.info("skipped create_all; schema is managed outside the app")
 
     logger.info(
         "service started",
@@ -81,7 +96,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     settings = settings or get_settings()
 
+    # Interactive docs and the schema are a map of every route for anyone who
+    # finds the URL, so a deployed instance does not serve them.
+    docs_enabled = settings.environment in ("local", "ci")
+
     app = FastAPI(
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
         title="Test Observability + AI Root-Cause Agent",
         version=__version__,
         lifespan=lifespan,
@@ -101,8 +123,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(ingest_routes.router)
-    app.include_router(analysis_routes.router)
+    # Health probes stay open: the load balancer and the deploy smoke test call
+    # them without credentials, and neither returns data worth protecting.
+    app.include_router(ingest_routes.router, dependencies=[ApiKeyDep])
+    app.include_router(analysis_routes.router, dependencies=[ApiKeyDep])
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

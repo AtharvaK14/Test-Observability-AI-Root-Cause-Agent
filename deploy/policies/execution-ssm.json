@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTobsProdParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameters", "ssm:GetParameter"],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/tobs/prod/*"
+    }
+  ]
+}
